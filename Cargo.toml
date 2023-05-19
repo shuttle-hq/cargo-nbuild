@@ -1,5 +1,6 @@
 [workspace]
 
 members = [
+  "nbuild",
   "nbuild-core",
 ]

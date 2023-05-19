@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use cargo_metadata::{camino::Utf8PathBuf, semver::Version, MetadataCommand};
 
 #[derive(Debug, PartialEq)]
-struct Package {
+pub struct Package {
     name: String,
     src: Utf8PathBuf,
     dependencies: Vec<Dependency>,
