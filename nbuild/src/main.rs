@@ -1,6 +1,6 @@
 use std::env::current_dir;
 
-use nbuild_core::Package;
+use nbuild_core::PackageNode;
 use runix::{
     arguments::{eval::EvaluationArgs, source::SourceArgs, NixArgs},
     command::Build,
@@ -10,7 +10,10 @@ use runix::{
 
 #[tokio::main]
 async fn main() {
-    let expr = Package::from_current_dir(current_dir().unwrap()).to_derivative();
+    let mut package = PackageNode::from_current_dir(current_dir().unwrap());
+    package.resolve();
+
+    let expr = package.into_package().to_derivative();
     let cli = NixCommandLine::default();
 
     let value = Build {
