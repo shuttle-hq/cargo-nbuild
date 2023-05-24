@@ -16,6 +16,8 @@ async fn main() {
     let expr = package.into_package().to_derivative();
     let cli = NixCommandLine::default();
 
+    println!("Will build with:\n{expr}");
+
     let value = Build {
         eval: EvaluationArgs {
             impure: true.into(),
@@ -26,8 +28,10 @@ async fn main() {
         ..Default::default()
     }
     .run_json(&cli, &NixArgs::default())
-    .await
-    .unwrap();
+    .await;
 
-    println!("{value}");
+    match value {
+        Ok(value) => println!("{value}"),
+        Err(error) => println!("failed: {error}"),
+    }
 }

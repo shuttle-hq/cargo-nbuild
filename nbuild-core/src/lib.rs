@@ -28,38 +28,16 @@ impl Package {
             features: _,
             dependencies,
         } = self;
-        let (dep_names, dependencies): (Vec<_>, Vec<_>) = dependencies
+
+        let mut build_details = Default::default();
+        let dep_names: Vec<_> = dependencies
             .into_iter()
             .map(|d| {
-                let features = if d.features.is_empty() {
-                    Default::default()
-                } else {
-                    format!(
-                        "\n    features = [{}];",
-                        d.features
-                            .iter()
-                            .map(|f| format!("\"{f}\""))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    )
-                };
-
-                (
-                    d.name.clone(),
-                    format!(
-                        r#"
-  {} = pkgs.buildRustCrate rec {{
-    crateName = "{}";
-    version = "{}";
-
-    src = {};{}
-  }};
-"#,
-                        d.name, d.name, d.version, d.src, features
-                    ),
-                )
+                let name = d.name.clone();
+                Self::to_details(d, &mut build_details);
+                name
             })
-            .unzip();
+            .collect();
 
         format!(
             r#"{{ pkgs ? import <nixpkgs> {{}} }}:
@@ -77,7 +55,9 @@ let
     ];
   }} ;
 
-  # Dependencies{}in
+  # Dependencies
+{}
+in
 {}
 "#,
             name,
@@ -85,9 +65,54 @@ let
             version,
             src,
             dep_names.join("\n"),
-            dependencies.join("\n"),
+            build_details.join("\n"),
             name
         )
+    }
+
+    fn to_details(self, build_details: &mut Vec<String>) {
+        let Self {
+            name,
+            version,
+            src,
+            features,
+            dependencies,
+        } = self;
+        let features = if features.is_empty() {
+            Default::default()
+        } else {
+            format!(
+                "\n    features = [{}];",
+                features
+                    .iter()
+                    .map(|f| format!("\"{f}\""))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        };
+
+        let deps = if dependencies.is_empty() {
+            Default::default()
+        } else {
+            let dep_names: Vec<_> = dependencies.iter().map(|d| d.name.clone()).collect();
+            format!("\n    dependencies = [{}];", dep_names.join(" "))
+        };
+
+        let details = format!(
+            r#"  {} = pkgs.buildRustCrate rec {{
+    crateName = "{}";
+    version = "{}";
+
+    src = {};{}{}
+  }};"#,
+            name, name, version, src, deps, features
+        );
+
+        build_details.push(details);
+
+        for dependency in dependencies {
+            Self::to_details(dependency, build_details);
+        }
     }
 }
 
@@ -114,18 +139,8 @@ impl PackageNode {
     pub fn from_current_dir(path: impl Into<PathBuf>) -> Self {
         let metadata = MetadataCommand::new().current_dir(path).exec().unwrap();
 
-        let root_id = metadata
-            .resolve
-            .as_ref()
-            .unwrap()
-            .root
-            .as_ref()
-            .unwrap()
-            .clone();
-
         let packages =
             BTreeMap::from_iter(metadata.packages.iter().map(|p| (p.id.clone(), p.clone())));
-
         let nodes = BTreeMap::from_iter(
             metadata
                 .resolve
@@ -135,47 +150,46 @@ impl PackageNode {
                 .iter()
                 .map(|n| (n.id.clone(), n.clone())),
         );
-        let root = nodes.get(&root_id).unwrap().clone();
 
-        let root_package = packages.get(&root_id).unwrap();
+        let root_id = metadata
+            .resolve
+            .as_ref()
+            .unwrap()
+            .root
+            .as_ref()
+            .unwrap()
+            .clone();
 
-        let dependencies = root
+        let mut resolved_packages = Default::default();
+
+        Self::get_package(root_id, &packages, &nodes, &mut resolved_packages)
+    }
+
+    fn get_package(
+        id: PackageId,
+        packages: &BTreeMap<PackageId, cargo_metadata::Package>,
+        nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
+        resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<PackageNode>>>,
+    ) -> Self {
+        let node = nodes.get(&id).unwrap().clone();
+        let package = packages.get(&id).unwrap();
+
+        let features = package.features.clone();
+        let dependencies = node
             .dependencies
             .iter()
             .map(|id| {
-                let package = packages.get(id).unwrap();
-                let features = package.features.clone();
-                let details = root_package
-                    .dependencies
-                    .iter()
-                    .find(|d| d.name == package.name)
-                    .unwrap();
-
-                DependencyNode {
-                    package: RefCell::new(PackageNode {
-                        id: id.clone(),
-                        name: package.name.clone(),
-                        version: package.version.clone(),
-                        src: package.manifest_path.parent().unwrap().into(),
-                        dependencies: Default::default(),
-                        features,
-                        enabled_features: Default::default(),
-                    })
-                    .into(),
-                    optional: details.optional,
-                    uses_default_features: details.uses_default_features,
-                    features: details.features.clone(),
-                }
+                DependencyNode::get_dependency(id, package, &packages, &nodes, resolved_packages)
             })
             .collect();
 
         Self {
-            id: root_id,
-            name: root_package.name.clone(),
-            version: root_package.version.clone(),
-            src: root_package.manifest_path.parent().unwrap().into(),
+            id: id.clone(),
+            name: package.name.clone(),
+            version: package.version.clone(),
+            src: package.manifest_path.parent().unwrap().into(),
             dependencies,
-            features: Default::default(),
+            features,
             enabled_features: Default::default(),
         }
     }
@@ -213,6 +227,49 @@ impl PackageNode {
 
     fn visit(&mut self, visitor: &mut impl Visitor) {
         visitor.visit(self);
+    }
+}
+
+impl DependencyNode {
+    fn get_dependency(
+        id: &PackageId,
+        parent_package: &cargo_metadata::Package,
+        packages: &BTreeMap<PackageId, cargo_metadata::Package>,
+        nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
+        resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<PackageNode>>>,
+    ) -> Self {
+        // We eventually want only one representation of a package when we do feature resolution
+        let package = match resolved_packages.get(id) {
+            Some(package) => Rc::clone(package),
+            None => {
+                let package = RefCell::new(PackageNode::get_package(
+                    id.clone(),
+                    &packages,
+                    &nodes,
+                    resolved_packages,
+                ))
+                .into();
+
+                resolved_packages.insert(id.clone(), Rc::clone(&package));
+
+                package
+            }
+        };
+
+        let name = package.borrow().name.clone();
+
+        let details = parent_package
+            .dependencies
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap();
+
+        Self {
+            package,
+            optional: details.optional,
+            uses_default_features: details.uses_default_features,
+            features: details.features.clone(),
+        }
     }
 }
 
@@ -317,6 +374,11 @@ mod tests {
 
         let package = PackageNode::from_current_dir(path.clone());
 
+        let registry = PathBuf::from_str(env!("HOME"))
+            .unwrap()
+            .join(".cargo")
+            .join("registry");
+
         assert_eq!(
             package,
             PackageNode {
@@ -340,7 +402,31 @@ mod tests {
                         name: "child".to_string(),
                         version: "0.1.0".parse().unwrap(),
                         src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                        dependencies: Default::default(),
+                        dependencies: vec![DependencyNode {
+                            package: RefCell::new(PackageNode {
+                                id: PackageId {
+                                    repr:
+                                        "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
+                                            .to_string()
+                                },
+                                name: "itoa".to_string(),
+                                version: "1.0.6".parse().unwrap(),
+                                src: Utf8PathBuf::from_path_buf(
+                                    registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
+                                )
+                                .unwrap(),
+                                dependencies: Default::default(),
+                                features: HashMap::from([(
+                                    "no-panic".to_string(),
+                                    vec!["dep:no-panic".to_string()]
+                                )]),
+                                enabled_features: Default::default(),
+                            })
+                            .into(),
+                            optional: false,
+                            uses_default_features: true,
+                            features: Default::default(),
+                        }],
                         features: HashMap::from([
                             (
                                 "default".to_string(),
@@ -370,6 +456,11 @@ mod tests {
             .join("workspace");
         let path = workspace.join("parent");
 
+        let registry = PathBuf::from_str(env!("HOME"))
+            .unwrap()
+            .join(".cargo")
+            .join("registry");
+
         let package = Package {
             name: "parent".to_string(),
             version: "0.1.0".parse().unwrap(),
@@ -378,7 +469,16 @@ mod tests {
                 name: "child".to_string(),
                 version: "0.1.0".parse().unwrap(),
                 src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                dependencies: Default::default(),
+                dependencies: vec![Package {
+                    name: "itoa".to_string(),
+                    version: "1.0.6".parse().unwrap(),
+                    src: Utf8PathBuf::from_path_buf(
+                        registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
+                    )
+                    .unwrap(),
+                    dependencies: Default::default(),
+                    features: Default::default(),
+                }],
                 features: vec!["one".to_string()],
             }],
             features: Default::default(),
@@ -398,6 +498,11 @@ mod tests {
             .join("tests")
             .join("workspace");
         let path = workspace.join("parent");
+
+        let registry = PathBuf::from_str(env!("HOME"))
+            .unwrap()
+            .join(".cargo")
+            .join("registry");
 
         let input = PackageNode {
             id: PackageId {
@@ -420,7 +525,31 @@ mod tests {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                    dependencies: Default::default(),
+                    dependencies: vec![DependencyNode {
+                        package: RefCell::new(PackageNode {
+                            id: PackageId {
+                                repr:
+                                    "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
+                                        .to_string(),
+                            },
+                            name: "itoa".to_string(),
+                            version: "1.0.6".parse().unwrap(),
+                            src: Utf8PathBuf::from_path_buf(
+                                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
+                            )
+                            .unwrap(),
+                            dependencies: Default::default(),
+                            features: HashMap::from([(
+                                "no-panic".to_string(),
+                                vec!["dep:no-panic".to_string()],
+                            )]),
+                            enabled_features: Default::default(),
+                        })
+                        .into(),
+                        optional: false,
+                        uses_default_features: true,
+                        features: Default::default(),
+                    }],
                     features: HashMap::from([
                         (
                             "default".to_string(),
@@ -449,7 +578,16 @@ mod tests {
                 name: "child".to_string(),
                 version: "0.1.0".parse().unwrap(),
                 src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                dependencies: Default::default(),
+                dependencies: vec![Package {
+                    name: "itoa".to_string(),
+                    version: "1.0.6".parse().unwrap(),
+                    src: Utf8PathBuf::from_path_buf(
+                        registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
+                    )
+                    .unwrap(),
+                    dependencies: Default::default(),
+                    features: Default::default(),
+                }],
                 features: vec!["one".to_string()],
             }],
             features: Default::default(),
