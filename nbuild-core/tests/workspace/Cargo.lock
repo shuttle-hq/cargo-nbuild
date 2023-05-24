@@ -6,8 +6,15 @@ version = 3
 name = "child"
 version = "0.1.0"
 dependencies = [
- "itoa",
+ "itoa 1.0.6",
+ "libc",
 ]
+
+[[package]]
+name = "itoa"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71991ff56294aa922b450139ee08b3bfc70982c6b2c7562771375cf73542dd4"
 
 [[package]]
 name = "itoa"
@@ -16,9 +23,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "453ad9f582a441959e5f0d088b02ce04cfe8d51a8eaf077f12ac6d3e94164ca6"
 
 [[package]]
+name = "libc"
+version = "0.2.144"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b00cc1c228a6782d0f076e7b232802e0c5689d41bb5df366f2a6b6621cfdfe1"
+
+[[package]]
 name = "parent"
 version = "0.1.0"
 dependencies = [
  "child",
- "itoa",
+ "itoa 0.4.8",
+ "libc",
 ]

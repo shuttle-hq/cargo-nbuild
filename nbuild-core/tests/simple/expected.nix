@@ -9,12 +9,12 @@ let
     src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/simple;
 
     dependencies = [
-      itoa
+      itoa_1_0_6
     ];
   } ;
 
   # Dependencies
-  itoa = pkgs.buildRustCrate rec {
+  itoa_1_0_6 = pkgs.buildRustCrate rec {
     crateName = "itoa";
     version = "1.0.6";
 

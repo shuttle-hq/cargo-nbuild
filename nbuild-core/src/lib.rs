@@ -32,12 +32,12 @@ impl Package {
         } = self;
 
         let mut build_details = Default::default();
-        let dep_names: Vec<_> = dependencies
+        let dep_idents: Vec<_> = dependencies
             .into_iter()
             .map(|d| {
-                let name = d.borrow().name.clone();
+                let identifier = d.borrow().identifier();
                 Self::to_details(d, &mut build_details);
-                name
+                identifier
             })
             .collect();
 
@@ -66,7 +66,7 @@ in
             name,
             version,
             src,
-            dep_names.join("\n      "),
+            dep_idents.join("\n      "),
             build_details.join("\n"),
             name
         )
@@ -96,12 +96,12 @@ in
         let deps = if this.dependencies.is_empty() {
             Default::default()
         } else {
-            let dep_names: Vec<_> = this
+            let dep_idents: Vec<_> = this
                 .dependencies
                 .iter()
-                .map(|d| d.borrow().name.clone())
+                .map(|d| d.borrow().identifier())
                 .collect();
-            format!("\n    dependencies = [{}];", dep_names.join(" "))
+            format!("\n    dependencies = [{}];", dep_idents.join(" "))
         };
 
         let details = format!(
@@ -111,7 +111,12 @@ in
 
     src = {};{}{}
   }};"#,
-            this.name, this.name, this.version, this.src, deps, features
+            this.identifier(),
+            this.name,
+            this.version,
+            this.src,
+            deps,
+            features
         );
 
         build_details.push(details);
@@ -121,6 +126,14 @@ in
         }
 
         this.printed = true;
+    }
+
+    fn identifier(&self) -> String {
+        format!(
+            "{}_{}",
+            self.name,
+            self.version.to_string().replace('.', "_").replace('+', "_")
+        )
     }
 }
 
@@ -187,7 +200,7 @@ impl PackageNode {
             .dependencies
             .iter()
             .map(|id| {
-                DependencyNode::get_dependency(id, package, &packages, &nodes, resolved_packages)
+                DependencyNode::get_dependency(id, package, packages, nodes, resolved_packages)
             })
             .collect();
 
@@ -282,8 +295,8 @@ impl DependencyNode {
             None => {
                 let package = RefCell::new(PackageNode::get_package(
                     id.clone(),
-                    &packages,
-                    &nodes,
+                    packages,
+                    nodes,
                     resolved_packages,
                 ))
                 .into();
@@ -444,31 +457,64 @@ mod tests {
                             name: "child".to_string(),
                             version: "0.1.0".parse().unwrap(),
                             src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                            dependencies: vec![DependencyNode {
-                                package: RefCell::new(PackageNode {
-                                    id: PackageId {
-                                        repr:
-                                            "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                .to_string()
-                                    },
-                                    name: "itoa".to_string(),
-                                    version: "1.0.6".parse().unwrap(),
-                                    src: Utf8PathBuf::from_path_buf(
-                                        registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
-                                    )
-                                    .unwrap(),
-                                    dependencies: Default::default(),
-                                    features: HashMap::from([(
-                                        "no-panic".to_string(),
-                                        vec!["dep:no-panic".to_string()]
-                                    )]),
-                                    enabled_features: Default::default(),
-                                })
-                                .into(),
-                                optional: false,
-                                uses_default_features: true,
-                                features: Default::default(),
-                            }],
+                            dependencies: vec![
+                                DependencyNode {
+                                    package: RefCell::new(PackageNode {
+                                        id: PackageId {
+                                            repr:
+                                                "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
+                                                    .to_string()
+                                        },
+                                        name: "itoa".to_string(),
+                                        version: "1.0.6".parse().unwrap(),
+                                        src: Utf8PathBuf::from_path_buf(
+                                            registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
+                                        )
+                                        .unwrap(),
+                                        dependencies: Default::default(),
+                                        features: HashMap::from([(
+                                            "no-panic".to_string(),
+                                            vec!["dep:no-panic".to_string()]
+                                        )]),
+                                        enabled_features: Default::default(),
+                                    })
+                                    .into(),
+                                    optional: false,
+                                    uses_default_features: true,
+                                    features: Default::default(),
+                                },
+                                DependencyNode {
+                                    package: RefCell::new(PackageNode {
+                                        id: PackageId {
+                                            repr:
+                                                "libc 0.2.144 (registry+https://github.com/rust-lang/crates.io-index)"
+                                                    .to_string()
+                                        },
+                                        name: "libc".to_string(),
+                                        version: "0.2.144".parse().unwrap(),
+                                        src: Utf8PathBuf::from_path_buf(
+                                            registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144")
+                                        )
+                                        .unwrap(),
+                                        dependencies: Default::default(),
+                                        features: HashMap::from([
+                                            ("std".to_string(), vec![]),
+                                            ("default".to_string(), vec!["std".to_string()]),
+                                            ("use_std".to_string(), vec!["std".to_string()]),
+                                            ("extra_traits".to_string(), vec![]),
+                                            ("align".to_string(), vec![]),
+                                            ("rustc-dep-of-std".to_string(), vec!["align".to_string(), "rustc-std-workspace-core".to_string()]),
+                                            ("const-extern-fn".to_string(), vec![]),
+                                            ("rustc-std-workspace-core".to_string(), vec!["dep:rustc-std-workspace-core".to_string()]),
+                                        ]),
+                                        enabled_features: Default::default(),
+                                    })
+                                    .into(),
+                                    optional: false,
+                                    uses_default_features: true,
+                                    features: Default::default(),
+                                }
+                            ],
                             features: HashMap::from([
                                 (
                                     "default".to_string(),
@@ -488,27 +534,60 @@ mod tests {
                         package: RefCell::new(PackageNode {
                             id: PackageId {
                                 repr:
-                                    "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
+                                    "itoa 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)"
                                         .to_string()
                             },
                             name: "itoa".to_string(),
-                            version: "1.0.6".parse().unwrap(),
+                            version: "0.4.8".parse().unwrap(),
                             src: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
+                                registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8")
                             )
                             .unwrap(),
                             dependencies: Default::default(),
-                            features: HashMap::from([(
-                                "no-panic".to_string(),
-                                vec!["dep:no-panic".to_string()]
-                            )]),
+                            features: HashMap::from([
+                                ("default".to_string(), vec!["std".to_string()]),
+                                ("no-panic".to_string(), vec!["dep:no-panic".to_string()]),
+                                ("std".to_string(), vec![]),
+                                ("i128".to_string(), vec![]),
+                            ]),
                             enabled_features: Default::default(),
                         })
                         .into(),
                         optional: false,
                         uses_default_features: true,
                         features: Default::default(),
-                    }
+                    },
+                    DependencyNode {
+                        package: RefCell::new(PackageNode {
+                            id: PackageId {
+                                repr:
+                                    "libc 0.2.144 (registry+https://github.com/rust-lang/crates.io-index)"
+                                        .to_string()
+                            },
+                            name: "libc".to_string(),
+                            version: "0.2.144".parse().unwrap(),
+                            src: Utf8PathBuf::from_path_buf(
+                                registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144")
+                            )
+                            .unwrap(),
+                            dependencies: Default::default(),
+                            features: HashMap::from([
+                                ("std".to_string(), vec![]),
+                                ("default".to_string(), vec!["std".to_string()]),
+                                ("use_std".to_string(), vec!["std".to_string()]),
+                                ("extra_traits".to_string(), vec![]),
+                                ("align".to_string(), vec![]),
+                                ("rustc-dep-of-std".to_string(), vec!["align".to_string(), "rustc-std-workspace-core".to_string()]),
+                                ("const-extern-fn".to_string(), vec![]),
+                                ("rustc-std-workspace-core".to_string(), vec!["dep:rustc-std-workspace-core".to_string()]),
+                            ]),
+                            enabled_features: Default::default(),
+                        })
+                        .into(),
+                        optional: false,
+                        uses_default_features: true,
+                        features: Default::default(),
+                    },
                 ],
                 features: Default::default(),
                 enabled_features: Default::default(),
@@ -529,11 +608,11 @@ mod tests {
             .join(".cargo")
             .join("registry");
 
-        let itoa = RefCell::new(Package {
-            name: "itoa".to_string(),
-            version: "1.0.6".parse().unwrap(),
+        let libc = RefCell::new(Package {
+            name: "libc".to_string(),
+            version: "0.2.144".parse().unwrap(),
             src: Utf8PathBuf::from_path_buf(
-                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
+                registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144"),
             )
             .unwrap(),
             dependencies: Default::default(),
@@ -551,12 +630,38 @@ mod tests {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                    dependencies: vec![Rc::clone(&itoa)],
+                    dependencies: vec![
+                        RefCell::new(Package {
+                            name: "itoa".to_string(),
+                            version: "1.0.6".parse().unwrap(),
+                            src: Utf8PathBuf::from_path_buf(
+                                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
+                            )
+                            .unwrap(),
+                            dependencies: Default::default(),
+                            features: Default::default(),
+                            printed: false,
+                        })
+                        .into(),
+                        Rc::clone(&libc),
+                    ],
                     features: vec!["one".to_string()],
                     printed: false,
                 })
                 .into(),
-                itoa,
+                RefCell::new(Package {
+                    name: "itoa".to_string(),
+                    version: "0.4.8".parse().unwrap(),
+                    src: Utf8PathBuf::from_path_buf(
+                        registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8"),
+                    )
+                    .unwrap(),
+                    dependencies: Default::default(),
+                    features: Default::default(),
+                    printed: false,
+                })
+                .into(),
+                libc,
             ],
             features: Default::default(),
             printed: false,
@@ -582,19 +687,34 @@ mod tests {
             .join(".cargo")
             .join("registry");
 
-        let itoa = RefCell::new(PackageNode {
+        let libc = RefCell::new(PackageNode {
             id: PackageId {
-                repr: "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
+                repr: "libc 0.2.144 (registry+https://github.com/rust-lang/crates.io-index)"
                     .to_string(),
             },
-            name: "itoa".to_string(),
-            version: "1.0.6".parse().unwrap(),
+            name: "libc".to_string(),
+            version: "0.2.144".parse().unwrap(),
             src: Utf8PathBuf::from_path_buf(
-                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
+                registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144"),
             )
             .unwrap(),
             dependencies: Default::default(),
-            features: HashMap::from([("no-panic".to_string(), vec!["dep:no-panic".to_string()])]),
+            features: HashMap::from([
+                ("std".to_string(), vec![]),
+                ("default".to_string(), vec!["std".to_string()]),
+                ("use_std".to_string(), vec!["std".to_string()]),
+                ("extra_traits".to_string(), vec![]),
+                ("align".to_string(), vec![]),
+                (
+                    "rustc-dep-of-std".to_string(),
+                    vec!["align".to_string(), "rustc-std-workspace-core".to_string()],
+                ),
+                ("const-extern-fn".to_string(), vec![]),
+                (
+                    "rustc-std-workspace-core".to_string(),
+                    vec!["dep:rustc-std-workspace-core".to_string()],
+                ),
+            ]),
             enabled_features: Default::default(),
         })
         .into();
@@ -621,16 +741,43 @@ mod tests {
                         name: "child".to_string(),
                         version: "0.1.0".parse().unwrap(),
                         src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                        dependencies: vec![DependencyNode {
-                            package: Rc::clone(&itoa),
-                            optional: false,
-                            uses_default_features: true,
-                            features: Default::default(),
-                        }],
+                        dependencies: vec![
+                            DependencyNode {
+                                package: RefCell::new(PackageNode {
+                                    id: PackageId {
+                                        repr:
+                                            "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
+                                                .to_string()
+                                    },
+                                    name: "itoa".to_string(),
+                                    version: "1.0.6".parse().unwrap(),
+                                    src: Utf8PathBuf::from_path_buf(
+                                        registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
+                                    )
+                                    .unwrap(),
+                                    dependencies: Default::default(),
+                                    features: HashMap::from([(
+                                        "no-panic".to_string(),
+                                        vec!["dep:no-panic".to_string()]
+                                    )]),
+                                    enabled_features: Default::default(),
+                                })
+                                .into(),
+                                optional: false,
+                                uses_default_features: true,
+                                features: Default::default(),
+                            },
+                            DependencyNode {
+                                package: Rc::clone(&libc),
+                                optional: false,
+                                uses_default_features: true,
+                                features: Default::default(),
+                            }
+                        ],
                         features: HashMap::from([
                             (
                                 "default".to_string(),
-                                vec!["one".to_string(), "two".to_string()],
+                                vec!["one".to_string(), "two".to_string()]
                             ),
                             ("one".to_string(), vec![]),
                             ("two".to_string(), vec![]),
@@ -643,7 +790,34 @@ mod tests {
                     features: vec!["one".to_string()],
                 },
                 DependencyNode {
-                    package: itoa,
+                    package: RefCell::new(PackageNode {
+                        id: PackageId {
+                            repr:
+                                "itoa 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)"
+                                    .to_string()
+                        },
+                        name: "itoa".to_string(),
+                        version: "0.4.8".parse().unwrap(),
+                        src: Utf8PathBuf::from_path_buf(
+                            registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8")
+                        )
+                        .unwrap(),
+                        dependencies: Default::default(),
+                        features: HashMap::from([
+                            ("default".to_string(), vec!["std".to_string()]),
+                            ("no-panic".to_string(), vec!["dep:no-panic".to_string()]),
+                            ("std".to_string(), vec![]),
+                            ("i128".to_string(), vec![]),
+                        ]),
+                        enabled_features: Default::default(),
+                    })
+                    .into(),
+                    optional: false,
+                    uses_default_features: true,
+                    features: Default::default(),
+                },
+                DependencyNode {
+                    package: libc,
                     optional: false,
                     uses_default_features: true,
                     features: Default::default(),
@@ -655,11 +829,11 @@ mod tests {
 
         let actual = input.into_package();
 
-        let itoa = RefCell::new(Package {
-            name: "itoa".to_string(),
-            version: "1.0.6".parse().unwrap(),
+        let libc = RefCell::new(Package {
+            name: "libc".to_string(),
+            version: "0.2.144".parse().unwrap(),
             src: Utf8PathBuf::from_path_buf(
-                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
+                registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144"),
             )
             .unwrap(),
             dependencies: Default::default(),
@@ -676,12 +850,38 @@ mod tests {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                    dependencies: vec![Rc::clone(&itoa)],
+                    dependencies: vec![
+                        RefCell::new(Package {
+                            name: "itoa".to_string(),
+                            version: "1.0.6".parse().unwrap(),
+                            src: Utf8PathBuf::from_path_buf(
+                                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
+                            )
+                            .unwrap(),
+                            dependencies: Default::default(),
+                            features: Default::default(),
+                            printed: false,
+                        })
+                        .into(),
+                        Rc::clone(&libc),
+                    ],
                     features: vec!["one".to_string()],
                     printed: false,
                 })
                 .into(),
-                itoa,
+                RefCell::new(Package {
+                    name: "itoa".to_string(),
+                    version: "0.4.8".parse().unwrap(),
+                    src: Utf8PathBuf::from_path_buf(
+                        registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8"),
+                    )
+                    .unwrap(),
+                    dependencies: Default::default(),
+                    features: Default::default(),
+                    printed: false,
+                })
+                .into(),
+                libc,
             ],
             features: Default::default(),
             printed: false,
@@ -689,12 +889,12 @@ mod tests {
 
         assert_eq!(actual, expected);
 
-        // Make sure the itoas are linked
-        actual.dependencies[1].borrow_mut().version = "1.0.0".parse().unwrap();
+        // Make sure the libcs are linked - ie, the version for both libcs should change with this one assignment
+        actual.dependencies[2].borrow_mut().version = "0.2.0".parse().unwrap();
 
         assert_eq!(
-            actual.dependencies[1],
-            actual.dependencies[0].borrow().dependencies[0]
+            actual.dependencies[2],
+            actual.dependencies[0].borrow().dependencies[1]
         );
     }
 

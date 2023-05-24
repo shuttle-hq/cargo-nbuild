@@ -9,4 +9,5 @@ one = []
 two = []
 
 [dependencies]
+libc = "0.2"
 itoa = "1.0"
