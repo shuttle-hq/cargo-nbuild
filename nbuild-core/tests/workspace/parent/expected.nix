@@ -10,6 +10,7 @@ let
 
     dependencies = [
       child
+      itoa
     ];
   } ;
 

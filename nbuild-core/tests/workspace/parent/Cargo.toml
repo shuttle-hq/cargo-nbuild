@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 child = { path = "../child", default-features = false, features = ["one"] }
+itoa = "1.0"
