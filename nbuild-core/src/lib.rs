@@ -8,7 +8,10 @@ use std::{
 };
 
 use cargo_metadata::{camino::Utf8PathBuf, semver::Version, MetadataCommand, PackageId};
-use visitor::{EnableFeaturesVisitor, NoDefaultsVisitor, SetDefaultVisitor, Visitor};
+use visitor::{
+    EnableFeaturesVisitor, NoDefaultsVisitor, SetDefaultVisitor, UnpackChainVisitor,
+    UnpackDefaultVisitor, Visitor,
+};
 
 #[derive(Debug, PartialEq)]
 pub struct Package {
@@ -274,6 +277,8 @@ impl PackageNode {
         self.visit(&mut SetDefaultVisitor);
         self.visit(&mut NoDefaultsVisitor);
         self.visit(&mut EnableFeaturesVisitor);
+        self.visit(&mut UnpackDefaultVisitor);
+        self.visit(&mut UnpackChainVisitor);
     }
 
     fn visit(&mut self, visitor: &mut impl Visitor) {
@@ -898,95 +903,496 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve() {
-        let workspace = PathBuf::from_str(env!("CARGO_MANIFEST_DIR"))
-            .unwrap()
-            .join("tests")
-            .join("workspace");
-        let path = workspace.join("parent");
-        let mut input = PackageNode {
-            id: PackageId {
-                repr: format!(
-                    "parent 0.1.0 (path+file://{})",
-                    workspace.join("parent").display()
-                ),
-            },
-            name: "parent".to_string(),
-            version: "0.1.0".parse().unwrap(),
-            src: Utf8PathBuf::from_path_buf(path.clone()).unwrap(),
-            dependencies: vec![DependencyNode {
-                package: RefCell::new(PackageNode {
-                    id: PackageId {
-                        repr: format!(
-                            "child 0.1.0 (path+file://{})",
-                            workspace.join("child").display()
-                        ),
-                    },
-                    name: "child".to_string(),
-                    version: "0.1.0".parse().unwrap(),
-                    src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                    dependencies: Default::default(),
-                    features: HashMap::from([
-                        (
-                            "default".to_string(),
-                            vec!["one".to_string(), "two".to_string()],
-                        ),
-                        ("one".to_string(), vec![]),
-                        ("two".to_string(), vec![]),
-                    ]),
-                    enabled_features: Default::default(),
-                })
-                .into(),
-                optional: false,
-                uses_default_features: false,
-                features: vec!["one".to_string()],
-            }],
-            features: Default::default(),
-            enabled_features: Default::default(),
+    fn make_package_node(
+        name: &str,
+        features: Vec<(&str, Vec<&str>)>,
+        dependency: Option<DependencyNode>,
+    ) -> PackageNode {
+        let dependencies = if let Some(dependency) = dependency {
+            vec![dependency]
+        } else {
+            Default::default()
         };
 
-        input.resolve();
-        let expected = PackageNode {
+        PackageNode {
             id: PackageId {
-                repr: format!(
-                    "parent 0.1.0 (path+file://{})",
-                    workspace.join("parent").display()
-                ),
+                repr: format!("{} 0.1.0 (path+file://{})", name, name),
             },
-            name: "parent".to_string(),
+            name: name.to_string(),
             version: "0.1.0".parse().unwrap(),
-            src: Utf8PathBuf::from_path_buf(path).unwrap(),
-            dependencies: vec![DependencyNode {
-                package: RefCell::new(PackageNode {
-                    id: PackageId {
-                        repr: format!(
-                            "child 0.1.0 (path+file://{})",
-                            workspace.join("child").display()
-                        ),
-                    },
-                    name: "child".to_string(),
-                    version: "0.1.0".parse().unwrap(),
-                    src: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
-                    dependencies: Default::default(),
-                    features: HashMap::from([
-                        (
-                            "default".to_string(),
-                            vec!["one".to_string(), "two".to_string()],
-                        ),
-                        ("one".to_string(), vec![]),
-                        ("two".to_string(), vec![]),
-                    ]),
-                    enabled_features: HashSet::from(["one".to_string()]),
-                })
-                .into(),
+            src: Utf8PathBuf::from_path_buf(PathBuf::from_str(name).unwrap()).unwrap(),
+            dependencies,
+            features: HashMap::from_iter(features.into_iter().map(|(b, d)| {
+                (
+                    b.to_string(),
+                    d.into_iter().map(ToString::to_string).collect(),
+                )
+            })),
+            enabled_features: Default::default(),
+        }
+    }
+
+    // Defaults should not be enabled when no-defaults is used
+    #[test]
+    fn resolve_no_defaults() {
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("default", vec!["one", "two"]),
+                ("one", vec![]),
+                ("two", vec![]),
+            ],
+            None,
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: false,
                 features: vec!["one".to_string()],
-            }],
-            features: Default::default(),
-            enabled_features: Default::default(),
-        };
+            }),
+        );
+
+        input.resolve();
+
+        child.enabled_features.insert("one".to_string());
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: false,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Enable defaults correctly
+    #[test]
+    fn resolve_defaults() {
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("default", vec!["one", "two"]),
+                ("one", vec![]),
+                ("two", vec![]),
+            ],
+            None,
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        input.resolve();
+
+        child
+            .enabled_features
+            .extend(["one".to_string(), "two".to_string()]);
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Enable everything on a chain of defaults
+    #[test]
+    fn resolve_defaults_chain() {
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("default", vec!["one"]),
+                ("one", vec!["two"]),
+                ("two", vec![]),
+            ],
+            None,
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        input.resolve();
+
+        child
+            .enabled_features
+            .extend(["one".to_string(), "two".to_string()]);
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Optionals should not enable default features since they will not be used
+    #[test]
+    fn resolve_optional_no_defaults() {
+        let child = make_package_node(
+            "child",
+            vec![
+                ("default", vec!["one", "two"]),
+                ("one", vec![]),
+                ("two", vec![]),
+            ],
+            None,
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        input.resolve();
+
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Optionals should not enable any features since they will not be used
+    #[test]
+    fn resolve_optional_features() {
+        let child = make_package_node("child", vec![("one", vec![]), ("two", vec![])], None);
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        input.resolve();
+
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Enable everything on a chain
+    #[test]
+    fn resolve_chain() {
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("one", vec!["two"]),
+                ("two", vec!["three"]),
+                ("three", vec![]),
+            ],
+            None,
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        input.resolve();
+
+        child
+            .enabled_features
+            .extend(["one".to_string(), "two".to_string(), "three".to_string()]);
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Dependencies behind a feature should be enabled
+    #[test]
+    fn resolve_feature_dependency() {
+        let optional = make_package_node("optional", vec![], None);
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("one", vec!["optional"]),
+                ("optional", vec!["dep:optional"]),
+            ],
+            Some(DependencyNode {
+                package: RefCell::new(optional.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        input.resolve();
+
+        child.dependencies[0].optional = false;
+        child
+            .enabled_features
+            .extend(["one".to_string(), "optional".to_string()]);
+        child.dependencies[0].package = RefCell::new(optional).into();
+
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Features on dependencies behind a feature should be enabled
+    #[test]
+    fn resolve_feature_dependency_features() {
+        let optional = make_package_node("optional", vec![("feature", vec![])], None);
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("one", vec!["optional/feature"]),
+                ("optional", vec!["dep:optional"]),
+            ],
+            Some(DependencyNode {
+                package: RefCell::new(optional.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        input.resolve();
+
+        child.dependencies[0].optional = false;
+        child.dependencies[0].features.push("feature".to_string());
+        child.dependencies[0].package = RefCell::new(optional).into();
+        child.dependencies[0]
+            .package
+            .borrow_mut()
+            .enabled_features
+            .extend(["feature".to_string()]);
+        child
+            .enabled_features
+            .extend(["one".to_string(), "optional".to_string()]);
+
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Dependencies behind a feature should be enabled
+    #[test]
+    fn resolve_feature_dependency_defaults() {
+        let optional = make_package_node(
+            "optional",
+            vec![("default", vec!["std"]), ("std", vec![])],
+            None,
+        );
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("one", vec!["optional"]),
+                ("optional", vec!["dep:optional"]),
+            ],
+            Some(DependencyNode {
+                package: RefCell::new(optional.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        input.resolve();
+
+        child.dependencies[0].optional = false;
+        child.dependencies[0].package = RefCell::new(optional).into();
+        child.dependencies[0]
+            .package
+            .borrow_mut()
+            .enabled_features
+            .extend(["std".to_string()]);
+        child
+            .enabled_features
+            .extend(["one".to_string(), "optional".to_string()]);
+
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Default features on a dependency (with no-defaults) behind a feature should not be enabled
+    #[test]
+    fn resolve_feature_dependency_no_defaults() {
+        let optional = make_package_node(
+            "optional",
+            vec![("default", vec!["std"]), ("std", vec![])],
+            None,
+        );
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("one", vec!["optional"]),
+                ("optional", vec!["dep:optional"]),
+            ],
+            Some(DependencyNode {
+                package: RefCell::new(optional.clone()).into(),
+                optional: true,
+                uses_default_features: false,
+                features: vec![],
+            }),
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
+
+        input.resolve();
+
+        child.dependencies[0].optional = false;
+        child.dependencies[0].package = RefCell::new(optional).into();
+        child
+            .enabled_features
+            .extend(["one".to_string(), "optional".to_string()]);
+
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["one".to_string()],
+            }),
+        );
 
         assert_eq!(input, expected);
     }
