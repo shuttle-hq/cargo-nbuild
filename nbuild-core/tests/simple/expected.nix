@@ -11,6 +11,7 @@ let
     dependencies = [
       itoa_1_0_6
     ];
+    edition = "2021";
   } ;
 
   # Dependencies
@@ -19,6 +20,7 @@ let
     version = "1.0.6";
 
     src = /home/user/.cargo/registry/src/github.com-1ecc6299db9ec823/itoa-1.0.6;
+    edition = "2018";
   };
 in
 simple

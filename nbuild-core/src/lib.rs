@@ -20,6 +20,7 @@ pub struct Package {
     src: Utf8PathBuf,
     features: Vec<String>,
     dependencies: Vec<Rc<RefCell<Package>>>,
+    edition: String,
     printed: bool,
 }
 
@@ -31,6 +32,7 @@ impl Package {
             src,
             features: _,
             dependencies,
+            edition,
             printed: _,
         } = self;
 
@@ -58,6 +60,7 @@ let
     dependencies = [
       {}
     ];
+    edition = "{}";
   }} ;
 
   # Dependencies
@@ -70,6 +73,7 @@ in
             version,
             src,
             dep_idents.join("\n      "),
+            edition,
             build_details.join("\n"),
             name
         )
@@ -113,13 +117,15 @@ in
     version = "{}";
 
     src = {};{}{}
+    edition = "{}";
   }};"#,
             this.identifier(),
             this.name,
             this.version,
             this.src,
             deps,
-            features
+            features,
+            this.edition,
         );
 
         build_details.push(details);
@@ -149,6 +155,7 @@ pub struct PackageNode {
     features: HashMap<String, Vec<String>>,
     enabled_features: HashSet<String>,
     dependencies: Vec<DependencyNode>,
+    edition: String,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -215,6 +222,7 @@ impl PackageNode {
             dependencies,
             features,
             enabled_features: Default::default(),
+            edition: package.edition.to_string(),
         }
     }
 
@@ -241,6 +249,7 @@ impl PackageNode {
             features: _,
             enabled_features,
             dependencies,
+            edition,
         } = self;
 
         match converted.get(&id) {
@@ -248,6 +257,7 @@ impl PackageNode {
             None => {
                 let dependencies = dependencies
                     .iter()
+                    .filter(|d| !d.optional)
                     .map(|d| {
                         Rc::clone(&d.package)
                             .borrow()
@@ -262,6 +272,7 @@ impl PackageNode {
                     src,
                     features: enabled_features.into_iter().collect(),
                     dependencies,
+                    edition,
                     printed: false,
                 })
                 .into();
@@ -378,6 +389,7 @@ mod tests {
                             vec!["dep:no-panic".to_string()]
                         )]),
                         enabled_features: Default::default(),
+                        edition: "2018".to_string(),
                     })
                     .into(),
                     optional: false,
@@ -386,6 +398,7 @@ mod tests {
                 }],
                 features: Default::default(),
                 enabled_features: Default::default(),
+                edition: "2021".to_string(),
             }
         );
     }
@@ -409,10 +422,12 @@ mod tests {
                     .unwrap(),
                 dependencies: Default::default(),
                 features: Default::default(),
+                edition: "2018".to_string(),
                 printed: false,
             })
             .into()],
             features: Default::default(),
+            edition: "2021".to_string(),
             printed: false,
         };
 
@@ -482,6 +497,7 @@ mod tests {
                                             vec!["dep:no-panic".to_string()]
                                         )]),
                                         enabled_features: Default::default(),
+                                        edition: "2018".to_string(),
                                     })
                                     .into(),
                                     optional: false,
@@ -513,6 +529,7 @@ mod tests {
                                             ("rustc-std-workspace-core".to_string(), vec!["dep:rustc-std-workspace-core".to_string()]),
                                         ]),
                                         enabled_features: Default::default(),
+                                        edition: "2015".to_string(),
                                     })
                                     .into(),
                                     optional: false,
@@ -529,6 +546,7 @@ mod tests {
                                 ("two".to_string(), vec![]),
                             ]),
                             enabled_features: Default::default(),
+                            edition: "2021".to_string(),
                         })
                         .into(),
                         optional: false,
@@ -551,11 +569,11 @@ mod tests {
                             dependencies: Default::default(),
                             features: HashMap::from([
                                 ("default".to_string(), vec!["std".to_string()]),
-                                ("no-panic".to_string(), vec!["dep:no-panic".to_string()]),
                                 ("std".to_string(), vec![]),
                                 ("i128".to_string(), vec![]),
                             ]),
                             enabled_features: Default::default(),
+                            edition: "2015".to_string(),
                         })
                         .into(),
                         optional: false,
@@ -587,6 +605,7 @@ mod tests {
                                 ("rustc-std-workspace-core".to_string(), vec!["dep:rustc-std-workspace-core".to_string()]),
                             ]),
                             enabled_features: Default::default(),
+                            edition: "2015".to_string(),
                         })
                         .into(),
                         optional: false,
@@ -596,6 +615,7 @@ mod tests {
                 ],
                 features: Default::default(),
                 enabled_features: Default::default(),
+                edition: "2021".to_string(),
             }
         );
     }
@@ -622,6 +642,7 @@ mod tests {
             .unwrap(),
             dependencies: Default::default(),
             features: Default::default(),
+            edition: "2015".to_string(),
             printed: false,
         })
         .into();
@@ -645,12 +666,14 @@ mod tests {
                             .unwrap(),
                             dependencies: Default::default(),
                             features: Default::default(),
+                            edition: "2018".to_string(),
                             printed: false,
                         })
                         .into(),
                         Rc::clone(&libc),
                     ],
                     features: vec!["one".to_string()],
+                    edition: "2021".to_string(),
                     printed: false,
                 })
                 .into(),
@@ -663,12 +686,14 @@ mod tests {
                     .unwrap(),
                     dependencies: Default::default(),
                     features: Default::default(),
+                    edition: "2018".to_string(),
                     printed: false,
                 })
                 .into(),
                 libc,
             ],
             features: Default::default(),
+            edition: "2021".to_string(),
             printed: false,
         };
 
@@ -721,6 +746,27 @@ mod tests {
                 ),
             ]),
             enabled_features: Default::default(),
+            edition: "2015".to_string(),
+        })
+        .into();
+        let optional = RefCell::new(PackageNode {
+            id: PackageId {
+                repr: "optional 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)"
+                    .to_string(),
+            },
+            name: "optional".to_string(),
+            version: "1.0.0".parse().unwrap(),
+            src: Utf8PathBuf::from_path_buf(
+                registry.join("src/github.com-1ecc6299db9ec823/optional-1.0.0"),
+            )
+            .unwrap(),
+            dependencies: Default::default(),
+            features: HashMap::from([
+                ("std".to_string(), vec![]),
+                ("default".to_string(), vec!["std".to_string()]),
+            ]),
+            enabled_features: Default::default(),
+            edition: "2021".to_string(),
         })
         .into();
 
@@ -766,6 +812,7 @@ mod tests {
                                         vec!["dep:no-panic".to_string()]
                                     )]),
                                     enabled_features: Default::default(),
+                                    edition: "2018".to_string(),
                                 })
                                 .into(),
                                 optional: false,
@@ -775,6 +822,12 @@ mod tests {
                             DependencyNode {
                                 package: Rc::clone(&libc),
                                 optional: false,
+                                uses_default_features: true,
+                                features: Default::default(),
+                            },
+                            DependencyNode {
+                                package: Rc::clone(&optional),
+                                optional: true,
                                 uses_default_features: true,
                                 features: Default::default(),
                             }
@@ -788,6 +841,7 @@ mod tests {
                             ("two".to_string(), vec![]),
                         ]),
                         enabled_features: HashSet::from(["one".to_string()]),
+                        edition: "2021".to_string(),
                     })
                     .into(),
                     optional: false,
@@ -815,6 +869,7 @@ mod tests {
                             ("i128".to_string(), vec![]),
                         ]),
                         enabled_features: Default::default(),
+                        edition: "2018".to_string(),
                     })
                     .into(),
                     optional: false,
@@ -827,9 +882,16 @@ mod tests {
                     uses_default_features: true,
                     features: Default::default(),
                 },
+                DependencyNode {
+                    package: optional,
+                    optional: true,
+                    uses_default_features: true,
+                    features: Default::default(),
+                }
             ],
             features: Default::default(),
             enabled_features: Default::default(),
+            edition: "2021".to_string(),
         };
 
         let actual = input.into_package();
@@ -843,6 +905,7 @@ mod tests {
             .unwrap(),
             dependencies: Default::default(),
             features: Default::default(),
+            edition: "2015".to_string(),
             printed: false,
         })
         .into();
@@ -865,12 +928,14 @@ mod tests {
                             .unwrap(),
                             dependencies: Default::default(),
                             features: Default::default(),
+                            edition: "2018".to_string(),
                             printed: false,
                         })
                         .into(),
                         Rc::clone(&libc),
                     ],
                     features: vec!["one".to_string()],
+                    edition: "2021".to_string(),
                     printed: false,
                 })
                 .into(),
@@ -883,12 +948,14 @@ mod tests {
                     .unwrap(),
                     dependencies: Default::default(),
                     features: Default::default(),
+                    edition: "2018".to_string(),
                     printed: false,
                 })
                 .into(),
                 libc,
             ],
             features: Default::default(),
+            edition: "2021".to_string(),
             printed: false,
         };
 
@@ -929,6 +996,7 @@ mod tests {
                 )
             })),
             enabled_features: Default::default(),
+            edition: "2021".to_string(),
         }
     }
 
