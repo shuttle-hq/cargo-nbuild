@@ -21,6 +21,7 @@ pub struct Package {
     version: Version,
     package_path: Utf8PathBuf,
     lib_path: Option<Utf8PathBuf>,
+    build_path: Option<Utf8PathBuf>,
     features: Vec<String>,
     dependencies: Vec<Rc<RefCell<Package>>>,
     build_dependencies: Vec<Rc<RefCell<Package>>>,
@@ -35,6 +36,7 @@ impl Package {
             version,
             package_path,
             lib_path: _,
+            build_path: _,
             features: _,
             dependencies,
             build_dependencies,
@@ -126,6 +128,11 @@ in
         } else {
             Default::default()
         };
+        let build_path = if let Some(build_path) = &this.build_path {
+            format!("\n    build = \"{build_path}\";")
+        } else {
+            Default::default()
+        };
 
         let deps = if this.dependencies.is_empty() {
             Default::default()
@@ -153,7 +160,7 @@ in
     crateName = "{}";
     version = "{}";
 
-    src = {};{}{}{}{}
+    src = {};{}{}{}{}{}
     edition = "{}";
   }};"#,
             this.identifier(),
@@ -161,6 +168,7 @@ in
             this.version,
             this.package_path,
             lib_path,
+            build_path,
             deps,
             build_deps,
             features,
@@ -196,6 +204,7 @@ pub struct PackageNode {
     version: Version,
     package_path: Utf8PathBuf,
     lib_path: Option<Utf8PathBuf>,
+    build_path: Option<Utf8PathBuf>,
     features: HashMap<String, Vec<String>>,
     enabled_features: HashSet<String>,
     dependencies: Vec<DependencyNode>,
@@ -278,6 +287,16 @@ impl PackageNode {
                     .unwrap()
                     .to_path_buf()
             });
+        let build_path = package
+            .targets
+            .iter()
+            .find(|t| t.kind.iter().any(|k| k == "custom-build"))
+            .map(|t| {
+                t.src_path
+                    .strip_prefix(&package_path)
+                    .unwrap()
+                    .to_path_buf()
+            });
 
         Self {
             id: id.clone(),
@@ -285,6 +304,7 @@ impl PackageNode {
             version: package.version.clone(),
             package_path,
             lib_path,
+            build_path,
             dependencies,
             features,
             enabled_features: Default::default(),
@@ -313,6 +333,7 @@ impl PackageNode {
             version,
             package_path,
             lib_path,
+            build_path,
             features: _,
             enabled_features,
             dependencies,
@@ -348,12 +369,15 @@ impl PackageNode {
 
                 let lib_path =
                     lib_path.and_then(|p| if p == "src/lib.rs" { None } else { Some(p) });
+                let build_path =
+                    build_path.and_then(|p| if p == "build.rs" { None } else { Some(p) });
 
                 let package = RefCell::new(Package {
                     name,
                     version,
                     package_path,
                     lib_path,
+                    build_path,
                     features: enabled_features.into_iter().collect(),
                     dependencies,
                     build_dependencies,
@@ -456,6 +480,7 @@ mod tests {
                 name: "simple".to_string(),
                 package_path: Utf8PathBuf::from_path_buf(path).unwrap(),
                 lib_path: None,
+                build_path: None,
                 version: "0.1.0".parse().unwrap(),
                 dependencies: vec![
                     DependencyNode {
@@ -472,6 +497,7 @@ mod tests {
                             )
                             .unwrap(),
                             lib_path: Some("src/lib.rs".into()),
+                            build_path: None,
                             dependencies: Default::default(),
                             features: HashMap::from([
                                 ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
@@ -500,6 +526,7 @@ mod tests {
                             )
                             .unwrap(),
                             lib_path: Some("src/lib.rs".into()),
+                            build_path: None,
                             dependencies: Default::default(),
                             features: HashMap::from([(
                                 "no-panic".to_string(),
@@ -534,6 +561,7 @@ mod tests {
             version: "0.1.0".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(path.clone()).unwrap(),
             lib_path: None,
+            build_path: None,
             dependencies: vec![RefCell::new(Package {
                 name: "itoa".to_string(),
                 version: "1.0.6".parse().unwrap(),
@@ -542,6 +570,7 @@ mod tests {
                         .parse()
                         .unwrap(),
                 lib_path: None,
+                build_path: None,
                 dependencies: Default::default(),
                 build_dependencies: Default::default(),
                 features: Default::default(),
@@ -557,6 +586,7 @@ mod tests {
                         .parse()
                         .unwrap(),
                 lib_path: None,
+                build_path: None,
                 dependencies: Default::default(),
                 build_dependencies: Default::default(),
                 features: Default::default(),
@@ -604,6 +634,7 @@ mod tests {
                 version: "0.1.0".parse().unwrap(),
                 package_path: Utf8PathBuf::from_path_buf(path).unwrap(),
                 lib_path: None,
+                build_path: None,
                 dependencies: vec![
                     DependencyNode {
                         package: RefCell::new(PackageNode {
@@ -617,6 +648,7 @@ mod tests {
                             version: "0.1.0".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
                             lib_path: Some("src/lib.rs".into()),
+                            build_path: None,
                             dependencies: vec![
                                 DependencyNode {
                                     package: RefCell::new(PackageNode {
@@ -632,6 +664,7 @@ mod tests {
                                         )
                                         .unwrap(),
                                         lib_path: Some("lib.rs".into()),
+                                        build_path: None,
                                         dependencies: Default::default(),
                                         features: HashMap::from([
                                             ("default".to_string(), vec!["std".to_string()]),
@@ -660,6 +693,7 @@ mod tests {
                                         )
                                         .unwrap(),
                                         lib_path: Some("src/lib.rs".into()),
+                                        build_path: None,
                                         dependencies: Default::default(),
                                         features: HashMap::from([(
                                             "no-panic".to_string(),
@@ -688,6 +722,7 @@ mod tests {
                                         )
                                         .unwrap(),
                                         lib_path: Some("src/lib.rs".into()),
+                                        build_path: Some("build.rs".into()),
                                         dependencies: Default::default(),
                                         features: HashMap::from([
                                             ("std".to_string(), vec![]),
@@ -707,7 +742,33 @@ mod tests {
                                     uses_default_features: true,
                                     features: Default::default(),
                                     kind: DependencyKind::Normal,
-                                }
+                                },
+                                DependencyNode {
+                                    package: RefCell::new(PackageNode {
+                                        id: PackageId {
+                                            repr:
+                                                "rustversion 1.0.12 (registry+https://github.com/rust-lang/crates.io-index)"
+                                                    .to_string()
+                                        },
+                                        name: "rustversion".to_string(),
+                                        version: "1.0.12".parse().unwrap(),
+                                        package_path: Utf8PathBuf::from_path_buf(
+                                            registry.join("src/github.com-1ecc6299db9ec823/rustversion-1.0.12")
+                                        )
+                                        .unwrap(),
+                                        lib_path: Some("src/lib.rs".into()),
+                                        build_path: Some("build/build.rs".into()),
+                                        dependencies: Default::default(),
+                                        features: Default::default(),
+                                        enabled_features: Default::default(),
+                                        edition: "2018".to_string(),
+                                    })
+                                    .into(),
+                                    optional: false,
+                                    uses_default_features: true,
+                                    features: Default::default(),
+                                    kind: DependencyKind::Normal,
+                                },
                             ],
                             features: HashMap::from([
                                 (
@@ -740,6 +801,7 @@ mod tests {
                             )
                             .unwrap(),
                             lib_path: Some("src/lib.rs".into()),
+                            build_path: None,
                             dependencies: Default::default(),
                             features: HashMap::from([
                                 ("default".to_string(), vec!["std".to_string()]),
@@ -769,6 +831,7 @@ mod tests {
                             )
                             .unwrap(),
                             lib_path: Some("src/lib.rs".into()),
+                            build_path: Some("build.rs".into()),
                             dependencies: Default::default(),
                             features: HashMap::from([
                                 ("std".to_string(), vec![]),
@@ -818,6 +881,7 @@ mod tests {
             )
             .unwrap(),
             lib_path: None,
+            build_path: None,
             dependencies: Default::default(),
             build_dependencies: Default::default(),
             features: Default::default(),
@@ -831,12 +895,14 @@ mod tests {
             version: "0.1.0".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(path.clone()).unwrap(),
             lib_path: None,
+            build_path: None,
             dependencies: vec![
                 RefCell::new(Package {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
                     lib_path: None,
+                    build_path: None,
                     dependencies: vec![
                         RefCell::new(Package {
                             name: "fnv".to_string(),
@@ -846,6 +912,7 @@ mod tests {
                             )
                             .unwrap(),
                             lib_path: Some("lib.rs".into()),
+                            build_path: None,
                             dependencies: Default::default(),
                             build_dependencies: Default::default(),
                             features: Default::default(),
@@ -861,6 +928,7 @@ mod tests {
                             )
                             .unwrap(),
                             lib_path: None,
+                            build_path: None,
                             dependencies: Default::default(),
                             build_dependencies: Default::default(),
                             features: Default::default(),
@@ -869,6 +937,22 @@ mod tests {
                         })
                         .into(),
                         Rc::clone(&libc),
+                        RefCell::new(Package {
+                            name: "rustversion".to_string(),
+                            version: "1.0.12".parse().unwrap(),
+                            package_path: Utf8PathBuf::from_path_buf(
+                                registry.join("src/github.com-1ecc6299db9ec823/rustversion-1.0.12"),
+                            )
+                            .unwrap(),
+                            lib_path: None,
+                            build_path: Some("build/build.rs".into()),
+                            dependencies: Default::default(),
+                            build_dependencies: Default::default(),
+                            features: Default::default(),
+                            edition: "2018".to_string(),
+                            printed: false,
+                        })
+                        .into(),
                     ],
                     build_dependencies: vec![RefCell::new(Package {
                         name: "arbitrary".to_string(),
@@ -877,6 +961,7 @@ mod tests {
                             .parse()
                             .unwrap(),
                         lib_path: None,
+                        build_path: None,
                         dependencies: Default::default(),
                         build_dependencies: Default::default(),
                         features: Default::default(),
@@ -897,6 +982,7 @@ mod tests {
                     )
                     .unwrap(),
                     lib_path: None,
+                    build_path: None,
                     dependencies: Default::default(),
                     build_dependencies: Default::default(),
                     features: Default::default(),
@@ -944,6 +1030,7 @@ mod tests {
             )
             .unwrap(),
             lib_path: Some("src/lib.rs".into()),
+            build_path: Some("build.rs".into()),
             dependencies: Default::default(),
             features: HashMap::from([
                 ("std".to_string(), vec![]),
@@ -977,6 +1064,7 @@ mod tests {
             )
             .unwrap(),
             lib_path: Some("src/lib.rs".into()),
+            build_path: None,
             dependencies: Default::default(),
             features: HashMap::from([
                 ("std".to_string(), vec![]),
@@ -998,6 +1086,7 @@ mod tests {
             version: "0.1.0".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(path.clone()).unwrap(),
             lib_path: None,
+            build_path: None,
             dependencies: vec![
                 DependencyNode {
                     package: RefCell::new(PackageNode {
@@ -1011,6 +1100,7 @@ mod tests {
                         version: "0.1.0".parse().unwrap(),
                         package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
                         lib_path: Some("src/lib.rs".into()),
+                        build_path: None,
                         dependencies: vec![
                             DependencyNode {
                                 package: RefCell::new(PackageNode {
@@ -1026,6 +1116,7 @@ mod tests {
                                     )
                                     .unwrap(),
                                     lib_path: Some("lib.rs".into()),
+                                    build_path: None,
                                     dependencies: Default::default(),
                                     features: HashMap::from([
                                         ("default".to_string(), vec!["std".to_string()]),
@@ -1054,6 +1145,7 @@ mod tests {
                                     )
                                     .unwrap(),
                                     lib_path: Some("src/lib.rs".into()),
+                                    build_path: None,
                                     dependencies: Default::default(),
                                     features: HashMap::from([(
                                         "no-panic".to_string(),
@@ -1096,6 +1188,7 @@ mod tests {
                                     )
                                     .unwrap(),
                                     lib_path: Some("src/lib.rs".into()),
+                                    build_path: None,
                                     dependencies: Default::default(),
                                     features: HashMap::from([
                                         ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
@@ -1109,6 +1202,32 @@ mod tests {
                                 uses_default_features: true,
                                 features: Default::default(),
                                 kind: DependencyKind::Build,
+                            },
+                            DependencyNode {
+                                package: RefCell::new(PackageNode {
+                                    id: PackageId {
+                                        repr:
+                                            "rustversion 1.0.12 (registry+https://github.com/rust-lang/crates.io-index)"
+                                                .to_string()
+                                    },
+                                    name: "rustversion".to_string(),
+                                    version: "1.0.12".parse().unwrap(),
+                                    package_path: Utf8PathBuf::from_path_buf(
+                                        registry.join("src/github.com-1ecc6299db9ec823/rustversion-1.0.12")
+                                    )
+                                    .unwrap(),
+                                    lib_path: Some("src/lib.rs".into()),
+                                    build_path: Some("build/build.rs".into()),
+                                    dependencies: Default::default(),
+                                    features: Default::default(),
+                                    enabled_features: Default::default(),
+                                    edition: "2018".to_string(),
+                                })
+                                .into(),
+                                optional: false,
+                                uses_default_features: true,
+                                features: Default::default(),
+                                kind: DependencyKind::Normal,
                             },
                         ],
                         features: HashMap::from([
@@ -1142,6 +1261,7 @@ mod tests {
                         )
                         .unwrap(),
                         lib_path: Some("src/lib.rs".into()),
+                        build_path: None,
                         dependencies: Default::default(),
                         features: HashMap::from([
                             ("default".to_string(), vec!["std".to_string()]),
@@ -1188,6 +1308,7 @@ mod tests {
             )
             .unwrap(),
             lib_path: None,
+            build_path: None,
             dependencies: Default::default(),
             build_dependencies: Default::default(),
             features: Default::default(),
@@ -1200,12 +1321,14 @@ mod tests {
             version: "0.1.0".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(path).unwrap(),
             lib_path: None,
+            build_path: None,
             dependencies: vec![
                 RefCell::new(Package {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
                     lib_path: None,
+                    build_path: None,
                     dependencies: vec![
                         RefCell::new(Package {
                             name: "fnv".to_string(),
@@ -1215,6 +1338,7 @@ mod tests {
                             )
                             .unwrap(),
                             lib_path: Some("lib.rs".into()),
+                            build_path: None,
                             dependencies: Default::default(),
                             build_dependencies: Default::default(),
                             features: Default::default(),
@@ -1230,6 +1354,7 @@ mod tests {
                             )
                             .unwrap(),
                             lib_path: None,
+                            build_path: None,
                             dependencies: Default::default(),
                             build_dependencies: Default::default(),
                             features: Default::default(),
@@ -1238,6 +1363,22 @@ mod tests {
                         })
                         .into(),
                         Rc::clone(&libc),
+                        RefCell::new(Package {
+                            name: "rustversion".to_string(),
+                            version: "1.0.12".parse().unwrap(),
+                            package_path: Utf8PathBuf::from_path_buf(
+                                registry.join("src/github.com-1ecc6299db9ec823/rustversion-1.0.12"),
+                            )
+                            .unwrap(),
+                            lib_path: None,
+                            build_path: Some("build/build.rs".into()),
+                            dependencies: Default::default(),
+                            build_dependencies: Default::default(),
+                            features: Default::default(),
+                            edition: "2018".to_string(),
+                            printed: false,
+                        })
+                        .into(),
                     ],
                     build_dependencies: vec![RefCell::new(Package {
                         name: "arbitrary".to_string(),
@@ -1247,6 +1388,7 @@ mod tests {
                         )
                         .unwrap(),
                         lib_path: None,
+                        build_path: None,
                         dependencies: Default::default(),
                         build_dependencies: Default::default(),
                         features: Default::default(),
@@ -1267,6 +1409,7 @@ mod tests {
                     )
                     .unwrap(),
                     lib_path: None,
+                    build_path: None,
                     dependencies: Default::default(),
                     build_dependencies: Default::default(),
                     features: Default::default(),
@@ -1312,6 +1455,7 @@ mod tests {
             version: "0.1.0".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(PathBuf::from_str(name).unwrap()).unwrap(),
             lib_path: None,
+            build_path: None,
             dependencies,
             features: HashMap::from_iter(features.into_iter().map(|(b, d)| {
                 (
