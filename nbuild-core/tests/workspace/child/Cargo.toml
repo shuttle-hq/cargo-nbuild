@@ -11,3 +11,4 @@ two = []
 [dependencies]
 libc = "0.2"
 itoa = "1.0"
+fnv = "1.0" # This dependency uses a custom lib path

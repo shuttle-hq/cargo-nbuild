@@ -1,3 +1,5 @@
+use fnv::FnvHashMap;
+
 #[cfg(feature = "one")]
 pub fn one() -> u8 {
     let result = 5;
@@ -11,4 +13,12 @@ pub fn one() -> u8 {
 #[cfg(feature = "two")]
 pub fn one() -> u8 {
     panic!("two should not be active")
+}
+
+pub fn lib_path() -> FnvHashMap<u32, &'static str> {
+    let mut map = FnvHashMap::default();
+    map.insert(1, "one");
+    map.insert(2, "two");
+
+    map
 }
