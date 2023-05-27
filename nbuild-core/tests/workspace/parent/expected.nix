@@ -23,6 +23,7 @@ let
 
     src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/child;
     dependencies = [itoa_1_0_6 libc_0_2_144];
+    buildDependencies = [arbitrary_1_3_0];
     features = ["one"];
     edition = "2021";
   };
@@ -39,6 +40,13 @@ let
 
     src = /home/chesedo/.cargo/registry/src/github.com-1ecc6299db9ec823/libc-0.2.144;
     edition = "2015";
+  };
+  arbitrary_1_3_0 = pkgs.buildRustCrate rec {
+    crateName = "arbitrary";
+    version = "1.3.0";
+
+    src = /home/user/.cargo/registry/src/github.com-1ecc6299db9ec823/arbitrary-1.3.0;
+    edition = "2018";
   };
   itoa_0_4_8 = pkgs.buildRustCrate rec {
     crateName = "itoa";
