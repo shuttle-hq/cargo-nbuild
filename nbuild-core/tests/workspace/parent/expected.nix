@@ -55,6 +55,7 @@ let
 
     src = /home/chesedo/.cargo/registry/src/github.com-1ecc6299db9ec823/rustversion-1.0.12;
     build = "build/build.rs";
+    procMacro = true;
     edition = "2018";
   };
   arbitrary_1_3_0 = pkgs.buildRustCrate rec {
