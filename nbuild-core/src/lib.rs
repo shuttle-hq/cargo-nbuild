@@ -11,6 +11,7 @@ use cargo_metadata::{
     camino::Utf8PathBuf, semver::Version, DependencyKind, MetadataCommand, PackageId,
 };
 use target_spec::{Platform, TargetSpec};
+use tracing::{instrument, trace};
 use visitor::{
     EnableFeaturesVisitor, NoDefaultsVisitor, SetDefaultVisitor, UnpackChainVisitor,
     UnpackDefaultVisitor, Visitor,
@@ -243,6 +244,8 @@ impl PackageNode {
             .exec()
             .unwrap();
 
+        trace!(?platform, "using platform");
+
         let packages =
             BTreeMap::from_iter(metadata.packages.iter().map(|p| (p.id.clone(), p.clone())));
         let nodes = BTreeMap::from_iter(
@@ -254,6 +257,8 @@ impl PackageNode {
                 .iter()
                 .map(|n| (n.id.clone(), n.clone())),
         );
+
+        trace!(?packages, ?nodes, "packages and nodes");
 
         let root_id = metadata
             .resolve
@@ -275,6 +280,7 @@ impl PackageNode {
         )
     }
 
+    #[instrument(skip_all, fields(id))]
     fn get_package(
         id: PackageId,
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
@@ -284,6 +290,8 @@ impl PackageNode {
     ) -> Self {
         let node = nodes.get(&id).unwrap().clone();
         let package = packages.get(&id).unwrap();
+
+        trace!(?package, ?node, "found package and node");
 
         let features = package.features.clone();
         let dependencies = node
@@ -447,6 +455,7 @@ impl PackageNode {
 }
 
 impl DependencyNode {
+    #[instrument(skip_all, fields(id, parent_name = parent_package.name))]
     fn get_dependency(
         id: &PackageId,
         parent_package: &cargo_metadata::Package,
@@ -507,6 +516,15 @@ impl DependencyNode {
 
             kind = dependency.kind;
         }
+
+        trace!(
+            name = package.borrow().name,
+            optional,
+            uses_default_features,
+            ?features,
+            %kind,
+            "done with dependency"
+        );
 
         Self {
             package,

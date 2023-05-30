@@ -7,16 +7,26 @@ use runix::{
     command_line::NixCommandLine,
     RunJson,
 };
+use tracing::debug;
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() {
+    let fmt_layer = tracing_subscriber::fmt::layer().pretty().with_ansi(false);
+    let filter_layer = tracing_subscriber::EnvFilter::from_default_env();
+
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
+
     let mut package = PackageNode::from_current_dir(current_dir().unwrap());
     package.resolve();
 
     let expr = package.into_package().to_derivative();
     let cli = NixCommandLine::default();
 
-    println!("Will build with:\n{expr}");
+    debug!(expr, "have nix expression");
 
     let value = Build {
         eval: EvaluationArgs {
