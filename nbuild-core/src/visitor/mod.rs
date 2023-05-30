@@ -36,16 +36,6 @@ impl Visitor for SetDefaultVisitor {
     }
 }
 
-pub struct NoDefaultsVisitor;
-
-impl Visitor for NoDefaultsVisitor {
-    fn visit_dependency(&mut self, dependency: &DependencyNode) {
-        if !dependency.uses_default_features {
-            dependency.package.borrow_mut().enabled_features.clear();
-        }
-    }
-}
-
 pub struct EnableFeaturesVisitor;
 
 impl Visitor for EnableFeaturesVisitor {
@@ -148,6 +138,41 @@ impl Visitor for UnpackChainVisitor {
             } else {
                 break;
             }
+        }
+    }
+}
+
+pub struct OptionalDependencyFeaturesVisitor;
+
+impl Visitor for OptionalDependencyFeaturesVisitor {
+    fn visit_package(&mut self, package: &mut PackageNode) {
+        let new_dependencies_features: Vec<_> = package
+            .enabled_features
+            .iter()
+            .filter_map(|f| f.split_once("?/"))
+            .map(|(d, f)| (d.to_string(), f.to_string()))
+            .collect();
+
+        for (dependency_name, feature) in new_dependencies_features {
+            if let Some(dependency) = package
+                .dependencies
+                .iter_mut()
+                .find(|d| d.package.borrow().name == dependency_name && !d.optional)
+            {
+                if !dependency.features.contains(&feature) {
+                    dependency.features.push(feature.clone());
+                }
+
+                dependency
+                    .package
+                    .borrow_mut()
+                    .enabled_features
+                    .insert(feature.clone());
+            }
+
+            package
+                .enabled_features
+                .remove(&format!("{dependency_name}?/{feature}"));
         }
     }
 }

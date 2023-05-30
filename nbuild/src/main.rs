@@ -12,7 +12,7 @@ use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() {
-    let fmt_layer = tracing_subscriber::fmt::layer().pretty();
+    let fmt_layer = tracing_subscriber::fmt::layer().pretty().with_ansi(false);
     let filter_layer = tracing_subscriber::EnvFilter::from_default_env();
 
     tracing_subscriber::registry()

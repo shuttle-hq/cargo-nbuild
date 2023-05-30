@@ -13,8 +13,8 @@ use cargo_metadata::{
 use target_spec::{Platform, TargetSpec};
 use tracing::{instrument, trace};
 use visitor::{
-    EnableFeaturesVisitor, NoDefaultsVisitor, SetDefaultVisitor, UnpackChainVisitor,
-    UnpackDefaultVisitor, Visitor,
+    EnableFeaturesVisitor, OptionalDependencyFeaturesVisitor, SetDefaultVisitor,
+    UnpackChainVisitor, UnpackDefaultVisitor, Visitor,
 };
 
 #[derive(Debug, PartialEq)]
@@ -469,10 +469,10 @@ impl PackageNode {
 
     pub fn resolve(&mut self) {
         self.visit(&mut SetDefaultVisitor);
-        self.visit(&mut NoDefaultsVisitor);
         self.visit(&mut EnableFeaturesVisitor);
         self.visit(&mut UnpackDefaultVisitor);
         self.visit(&mut UnpackChainVisitor);
+        self.visit(&mut OptionalDependencyFeaturesVisitor);
     }
 
     fn visit(&mut self, visitor: &mut impl Visitor) {
@@ -2170,6 +2170,181 @@ mod tests {
                 features: vec!["one".to_string()],
             }),
         );
+
+        assert_eq!(input, expected);
+    }
+
+    // Features on optional dependencies should be enabled if the dependency is enabled
+    #[test]
+    fn resolve_feature_on_optional_dependency() {
+        let optional = make_package_node(
+            "optional",
+            vec![("disabled", vec![]), ("enabled", vec![])],
+            None,
+        );
+        let mut child = make_package_node(
+            "child",
+            vec![
+                ("optional", vec!["dep:optional"]),
+                ("hi", vec!["optional?/enabled"]),
+            ],
+            Some(DependencyNode {
+                package: RefCell::new(optional.clone()).into(),
+                optional: true,
+                uses_default_features: false,
+                features: vec![],
+            }),
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["optional".to_string(), "hi".to_string()],
+            }),
+        );
+
+        input.resolve();
+
+        child.dependencies[0].optional = false;
+        child.dependencies[0].package = RefCell::new(optional).into();
+        child.dependencies[0]
+            .package
+            .borrow_mut()
+            .enabled_features
+            .extend(["enabled".to_string()]);
+        child.dependencies[0].features = vec!["enabled".to_string()];
+        child
+            .enabled_features
+            .extend(["optional".to_string(), "hi".to_string()]);
+
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["optional".to_string(), "hi".to_string()],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Check that a no default dependency does not removing an existing default
+    //
+    // Imagine a child dependency that has two other crates dependant on it. The first crate has defaults turned on,
+    // and the second crate has defaults turned off. The the result of turning off the defaults should not override
+    // the already on defaults.
+    //
+    // Here is a graphical representation
+    //
+    //              parent
+    //              /     \
+    //             /       \
+    //       layer1_1     layer1_2
+    //            \        /
+    //      (defaults)   (no_defaults)
+    //              \    /
+    //              child
+    #[test]
+    fn resolve_no_default_correctly() {
+        let mut child = make_package_node(
+            "child",
+            vec![("default", vec!["std"]), ("other", vec!["who"])],
+            None,
+        );
+        let child_rc = RefCell::new(child.clone()).into();
+
+        let layer1_1 = make_package_node(
+            "layer1_1",
+            vec![],
+            Some(DependencyNode {
+                package: Rc::clone(&child_rc),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["other".to_string()],
+            }),
+        );
+
+        let layer1_2 = make_package_node(
+            "layer1_2",
+            vec![],
+            Some(DependencyNode {
+                package: Rc::clone(&child_rc),
+                optional: false,
+                uses_default_features: false,
+                features: vec!["other".to_string()],
+            }),
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(layer1_1.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+        input.dependencies.push(DependencyNode {
+            package: RefCell::new(layer1_2).into(),
+            optional: false,
+            uses_default_features: true,
+            features: vec![],
+        });
+
+        input.resolve();
+
+        child
+            .enabled_features
+            .extend(["std".to_string(), "other".to_string(), "who".to_string()]);
+
+        let child_rc = RefCell::new(child).into();
+
+        let layer1_1 = make_package_node(
+            "layer1_1",
+            vec![],
+            Some(DependencyNode {
+                package: Rc::clone(&child_rc),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["other".to_string()],
+            }),
+        );
+
+        let layer1_2 = make_package_node(
+            "layer1_2",
+            vec![],
+            Some(DependencyNode {
+                package: Rc::clone(&child_rc),
+                optional: false,
+                uses_default_features: false,
+                features: vec!["other".to_string()],
+            }),
+        );
+
+        let mut expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                package: RefCell::new(layer1_1.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+        expected.dependencies.push(DependencyNode {
+            package: RefCell::new(layer1_2).into(),
+            optional: false,
+            uses_default_features: true,
+            features: vec![],
+        });
 
         assert_eq!(input, expected);
     }
