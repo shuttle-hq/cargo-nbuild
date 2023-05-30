@@ -12,7 +12,7 @@ use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() {
-    let fmt_layer = tracing_subscriber::fmt::layer().pretty().with_ansi(false);
+    let fmt_layer = tracing_subscriber::fmt::layer().pretty();
     let filter_layer = tracing_subscriber::EnvFilter::from_default_env();
 
     tracing_subscriber::registry()
@@ -26,7 +26,7 @@ async fn main() {
     let expr = package.into_package().to_derivative();
     let cli = NixCommandLine::default();
 
-    debug!(expr, "have nix expression");
+    debug!(%expr, "have nix expression");
 
     let value = Build {
         eval: EvaluationArgs {

@@ -12,8 +12,14 @@ itoa = "0.4"
 
 targets = { path = "../targets" }
 
+# We want to make sure that a second+ version of a dependency from targets are also processed correctly
 [target.'cfg(windows)'.dependencies]
 targets = { path = "../targets", features = ["windows"] }
 
 [target.'cfg(unix)'.dependencies]
 targets = { path = "../targets", features = ["unix"] }
+
+[dev-dependencies]
+# Multiple appearences originating from dev dependencies should not affect the normal dependencies
+# Aka, when we target unix, then the windows feature should not be active in normal dependencies
+targets = { path = "../targets", features = ["windows"] }

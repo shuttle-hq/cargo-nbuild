@@ -8,7 +8,7 @@ use std::{
 };
 
 use cargo_metadata::{
-    camino::Utf8PathBuf, semver::Version, DependencyKind, MetadataCommand, PackageId,
+    camino::Utf8PathBuf, semver::Version, Dependency, DependencyKind, MetadataCommand, PackageId,
 };
 use target_spec::{Platform, TargetSpec};
 use tracing::{instrument, trace};
@@ -219,6 +219,7 @@ pub struct PackageNode {
     features: HashMap<String, Vec<String>>,
     enabled_features: HashSet<String>,
     dependencies: Vec<DependencyNode>,
+    build_dependencies: Vec<DependencyNode>,
     edition: String,
 }
 
@@ -228,7 +229,6 @@ pub struct DependencyNode {
     optional: bool,
     uses_default_features: bool,
     features: Vec<String>,
-    kind: DependencyKind,
 }
 
 impl PackageNode {
@@ -294,13 +294,40 @@ impl PackageNode {
         trace!(?package, ?node, "found package and node");
 
         let features = package.features.clone();
+        let package_dependencies = package
+            .dependencies
+            .iter()
+            .filter(|d| d.kind == DependencyKind::Normal)
+            .cloned()
+            .collect();
+        let package_build_dependencies = package
+            .dependencies
+            .iter()
+            .filter(|d| d.kind == DependencyKind::Build)
+            .cloned()
+            .collect();
+
         let dependencies = node
             .dependencies
             .iter()
-            .map(|id| {
+            .filter_map(|id| {
                 DependencyNode::get_dependency(
                     id,
-                    package,
+                    &package_dependencies,
+                    packages,
+                    nodes,
+                    resolved_packages,
+                    platform,
+                )
+            })
+            .collect();
+        let build_dependencies = node
+            .dependencies
+            .iter()
+            .filter_map(|id| {
+                DependencyNode::get_dependency(
+                    id,
+                    &package_build_dependencies,
                     packages,
                     nodes,
                     resolved_packages,
@@ -352,6 +379,7 @@ impl PackageNode {
             build_path,
             proc_macro,
             dependencies,
+            build_dependencies,
             features,
             enabled_features: Default::default(),
             edition: package.edition.to_string(),
@@ -384,35 +412,33 @@ impl PackageNode {
             features: _,
             enabled_features,
             dependencies,
+            build_dependencies,
             edition,
         } = self;
 
         match converted.get(&id) {
             Some(package) => Rc::clone(package),
             None => {
-                let (dependencies, build_dependencies) = dependencies
+                let dependencies = dependencies
                     .iter()
                     .filter(|d| !d.optional)
                     .map(|d| {
-                        let dependency = Rc::clone(&d.package)
+                        Rc::clone(&d.package)
                             .borrow()
                             .clone()
-                            .convert_to_package(converted);
-
-                        (dependency, d.kind)
+                            .convert_to_package(converted)
                     })
-                    .fold(
-                        (Vec::new(), Vec::new()),
-                        |(mut normal, mut build), (d, kind)| {
-                            match kind {
-                                DependencyKind::Normal => normal.push(d),
-                                DependencyKind::Build => build.push(d),
-                                _ => {}
-                            }
-
-                            (normal, build)
-                        },
-                    );
+                    .collect();
+                let build_dependencies = build_dependencies
+                    .iter()
+                    .filter(|d| !d.optional)
+                    .map(|d| {
+                        Rc::clone(&d.package)
+                            .borrow()
+                            .clone()
+                            .convert_to_package(converted)
+                    })
+                    .collect();
 
                 let lib_path =
                     lib_path.and_then(|p| if p == "src/lib.rs" { None } else { Some(p) });
@@ -455,15 +481,15 @@ impl PackageNode {
 }
 
 impl DependencyNode {
-    #[instrument(skip_all, fields(id, parent_name = parent_package.name))]
+    #[instrument(skip_all, fields(%id))]
     fn get_dependency(
         id: &PackageId,
-        parent_package: &cargo_metadata::Package,
+        parent_dependencies: &Vec<Dependency>,
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
         nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
         resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<PackageNode>>>,
         platform: &Platform,
-    ) -> Self {
+    ) -> Option<Self> {
         // We eventually want only one representation of a package when we do feature resolution
         let package = match resolved_packages.get(id) {
             Some(package) => Rc::clone(package),
@@ -485,8 +511,7 @@ impl DependencyNode {
 
         let name = package.borrow().name.clone();
 
-        let dependencies = parent_package
-            .dependencies
+        let dependencies: Vec<_> = parent_dependencies
             .iter()
             .filter(|d| d.name == name)
             .filter(|d| match &d.target {
@@ -496,12 +521,18 @@ impl DependencyNode {
                     target_spec.eval(platform).unwrap_or(false)
                 }
                 None => true,
-            });
+            })
+            .collect();
+
+        // It could happen that this kind of dependency is not part of the kind passed into this function,
+        // in which case this dependency should not we considered as a real dependency.
+        if dependencies.is_empty() {
+            return None;
+        }
 
         let mut optional = true;
         let mut uses_default_features = false;
         let mut features: Vec<String> = Default::default();
-        let mut kind = Default::default();
 
         for dependency in dependencies {
             if !dependency.optional {
@@ -513,8 +544,6 @@ impl DependencyNode {
             }
 
             features.extend(dependency.features.iter().cloned());
-
-            kind = dependency.kind;
         }
 
         trace!(
@@ -522,17 +551,15 @@ impl DependencyNode {
             optional,
             uses_default_features,
             ?features,
-            %kind,
             "done with dependency"
         );
 
-        Self {
+        Some(Self {
             package,
             optional,
             uses_default_features,
             features,
-            kind,
-        }
+        })
     }
 }
 
@@ -574,36 +601,6 @@ mod tests {
                         package: RefCell::new(PackageNode {
                             id: PackageId {
                                 repr:
-                                    "arbitrary 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)"
-                                        .to_string()
-                            },
-                            name: "arbitrary".to_string(),
-                            version: "1.3.0".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0")
-                            )
-                            .unwrap(),
-                            lib_path: Some("src/lib.rs".into()),
-                            build_path: None,
-                            proc_macro: false,
-                            dependencies: Default::default(),
-                            features: HashMap::from([
-                                ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
-                                ("derive_arbitrary".to_string(), vec!["dep:derive_arbitrary".to_string()]),
-                            ]),
-                            enabled_features: Default::default(),
-                            edition: "2018".to_string(),
-                        })
-                        .into(),
-                        optional: false,
-                        uses_default_features: true,
-                        features: Default::default(),
-                        kind: DependencyKind::Build,
-                    },
-                    DependencyNode {
-                        package: RefCell::new(PackageNode {
-                            id: PackageId {
-                                repr:
                                     "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
                                         .to_string()
                             },
@@ -617,6 +614,7 @@ mod tests {
                             build_path: None,
                             proc_macro: false,
                             dependencies: Default::default(),
+                            build_dependencies: Default::default(),
                             features: HashMap::from([(
                                 "no-panic".to_string(),
                                 vec!["dep:no-panic".to_string()]
@@ -628,7 +626,38 @@ mod tests {
                         optional: false,
                         uses_default_features: true,
                         features: Default::default(),
-                        kind: DependencyKind::Normal,
+                    },
+                ],
+                build_dependencies: vec![
+                    DependencyNode {
+                        package: RefCell::new(PackageNode {
+                            id: PackageId {
+                                repr:
+                                    "arbitrary 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)"
+                                        .to_string()
+                            },
+                            name: "arbitrary".to_string(),
+                            version: "1.3.0".parse().unwrap(),
+                            package_path: Utf8PathBuf::from_path_buf(
+                                registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0")
+                            )
+                            .unwrap(),
+                            lib_path: Some("src/lib.rs".into()),
+                            build_path: None,
+                            proc_macro: false,
+                            dependencies: Default::default(),
+                            build_dependencies: Default::default(),
+                            features: HashMap::from([
+                                ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
+                                ("derive_arbitrary".to_string(), vec!["dep:derive_arbitrary".to_string()]),
+                            ]),
+                            enabled_features: Default::default(),
+                            edition: "2018".to_string(),
+                        })
+                        .into(),
+                        optional: false,
+                        uses_default_features: true,
+                        features: Default::default(),
                     },
                 ],
                 features: Default::default(),
@@ -761,6 +790,7 @@ mod tests {
                                         build_path: None,
                                         proc_macro: false,
                                         dependencies: Default::default(),
+                                        build_dependencies: Default::default(),
                                         features: HashMap::from([
                                             ("default".to_string(), vec!["std".to_string()]),
                                             ("std".to_string(), vec![]),
@@ -772,7 +802,6 @@ mod tests {
                                     optional: false,
                                     uses_default_features: true,
                                     features: Default::default(),
-                                    kind: DependencyKind::Normal,
                                 },
                                 DependencyNode {
                                     package: RefCell::new(PackageNode {
@@ -791,6 +820,7 @@ mod tests {
                                         build_path: None,
                                         proc_macro: false,
                                         dependencies: Default::default(),
+                                        build_dependencies: Default::default(),
                                         features: HashMap::from([(
                                             "no-panic".to_string(),
                                             vec!["dep:no-panic".to_string()]
@@ -802,7 +832,6 @@ mod tests {
                                     optional: false,
                                     uses_default_features: true,
                                     features: Default::default(),
-                                    kind: DependencyKind::Normal,
                                 },
                                 DependencyNode {
                                     package: RefCell::new(PackageNode {
@@ -821,6 +850,7 @@ mod tests {
                                         build_path: Some("build.rs".into()),
                                         proc_macro: false,
                                         dependencies: Default::default(),
+                                        build_dependencies: Default::default(),
                                         features: HashMap::from([
                                             ("std".to_string(), vec![]),
                                             ("default".to_string(), vec!["std".to_string()]),
@@ -838,7 +868,6 @@ mod tests {
                                     optional: false,
                                     uses_default_features: true,
                                     features: Default::default(),
-                                    kind: DependencyKind::Normal,
                                 },
                                 DependencyNode {
                                     package: RefCell::new(PackageNode {
@@ -857,6 +886,7 @@ mod tests {
                                         build_path: Some("build/build.rs".into()),
                                         proc_macro: true,
                                         dependencies: Default::default(),
+                                        build_dependencies: Default::default(),
                                         features: Default::default(),
                                         enabled_features: Default::default(),
                                         edition: "2018".to_string(),
@@ -865,9 +895,9 @@ mod tests {
                                     optional: false,
                                     uses_default_features: true,
                                     features: Default::default(),
-                                    kind: DependencyKind::Normal,
                                 },
                             ],
+                            build_dependencies: Default::default(),
                             features: HashMap::from([
                                 (
                                     "default".to_string(),
@@ -883,7 +913,6 @@ mod tests {
                         optional: false,
                         uses_default_features: false,
                         features: vec!["one".to_string()],
-                        kind: DependencyKind::Normal,
                     },
                     DependencyNode {
                         package: RefCell::new(PackageNode {
@@ -902,6 +931,7 @@ mod tests {
                             build_path: None,
                             proc_macro: false,
                             dependencies: Default::default(),
+                            build_dependencies: Default::default(),
                             features: HashMap::from([
                                 ("default".to_string(), vec!["std".to_string()]),
                                 ("std".to_string(), vec![]),
@@ -914,7 +944,6 @@ mod tests {
                         optional: false,
                         uses_default_features: true,
                         features: Default::default(),
-                        kind: DependencyKind::Normal,
                     },
                     DependencyNode {
                         package: RefCell::new(PackageNode {
@@ -933,6 +962,7 @@ mod tests {
                             build_path: Some("build.rs".into()),
                             proc_macro: false,
                             dependencies: Default::default(),
+                            build_dependencies: Default::default(),
                             features: HashMap::from([
                                 ("std".to_string(), vec![]),
                                 ("default".to_string(), vec!["std".to_string()]),
@@ -950,7 +980,6 @@ mod tests {
                         optional: false,
                         uses_default_features: true,
                         features: Default::default(),
-                        kind: DependencyKind::Normal,
                     },
                     DependencyNode {
                         package: RefCell::new(PackageNode {
@@ -967,6 +996,7 @@ mod tests {
                             build_path: None,
                             proc_macro: false,
                             dependencies: Default::default(),
+                            build_dependencies: Default::default(),
                             features: HashMap::from([
                                 ("unix".to_string(), vec![]),
                                 ("windows".to_string(), vec![]),
@@ -978,9 +1008,9 @@ mod tests {
                         optional: false,
                         uses_default_features: true,
                         features: vec!["unix".to_string()],
-                        kind: DependencyKind::Normal,
                     },
                 ],
+                build_dependencies: Default::default(),
                 features: Default::default(),
                 enabled_features: Default::default(),
                 edition: "2021".to_string(),
@@ -1183,6 +1213,7 @@ mod tests {
             build_path: Some("build.rs".into()),
             proc_macro: false,
             dependencies: Default::default(),
+            build_dependencies: Default::default(),
             features: HashMap::from([
                 ("std".to_string(), vec![]),
                 ("default".to_string(), vec!["std".to_string()]),
@@ -1218,6 +1249,7 @@ mod tests {
             build_path: None,
             proc_macro: false,
             dependencies: Default::default(),
+            build_dependencies: Default::default(),
             features: HashMap::from([
                 ("std".to_string(), vec![]),
                 ("default".to_string(), vec!["std".to_string()]),
@@ -1273,6 +1305,7 @@ mod tests {
                                     build_path: None,
                                     proc_macro: false,
                                     dependencies: Default::default(),
+                                    build_dependencies: Default::default(),
                                     features: HashMap::from([
                                         ("default".to_string(), vec!["std".to_string()]),
                                         ("std".to_string(), vec![]),
@@ -1284,7 +1317,6 @@ mod tests {
                                 optional: false,
                                 uses_default_features: true,
                                 features: Default::default(),
-                                kind: DependencyKind::Normal,
                             },
                             DependencyNode {
                                 package: RefCell::new(PackageNode {
@@ -1303,6 +1335,7 @@ mod tests {
                                     build_path: None,
                                     proc_macro: false,
                                     dependencies: Default::default(),
+                                    build_dependencies: Default::default(),
                                     features: HashMap::from([(
                                         "no-panic".to_string(),
                                         vec!["dep:no-panic".to_string()]
@@ -1314,51 +1347,18 @@ mod tests {
                                 optional: false,
                                 uses_default_features: true,
                                 features: Default::default(),
-                                kind: DependencyKind::Normal,
                             },
                             DependencyNode {
                                 package: Rc::clone(&libc),
                                 optional: false,
                                 uses_default_features: true,
                                 features: Default::default(),
-                                kind: DependencyKind::Normal,
                             },
                             DependencyNode {
                                 package: Rc::clone(&optional),
                                 optional: true,
                                 uses_default_features: true,
                                 features: Default::default(),
-                                kind: DependencyKind::Normal,
-                            },
-                            DependencyNode {
-                                package: RefCell::new(PackageNode {
-                                    id: PackageId {
-                                        repr:
-                                            "arbitrary 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                .to_string()
-                                    },
-                                    name: "arbitrary".to_string(),
-                                    version: "1.3.0".parse().unwrap(),
-                                    package_path: Utf8PathBuf::from_path_buf(
-                                        registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0")
-                                    )
-                                    .unwrap(),
-                                    lib_path: Some("src/lib.rs".into()),
-                                    build_path: None,
-                                    proc_macro: false,
-                                    dependencies: Default::default(),
-                                    features: HashMap::from([
-                                        ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
-                                        ("derive_arbitrary".to_string(), vec!["dep:derive_arbitrary".to_string()]),
-                                    ]),
-                                    enabled_features: Default::default(),
-                                    edition: "2018".to_string(),
-                                })
-                                .into(),
-                                optional: false,
-                                uses_default_features: true,
-                                features: Default::default(),
-                                kind: DependencyKind::Build,
                             },
                             DependencyNode {
                                 package: RefCell::new(PackageNode {
@@ -1377,6 +1377,7 @@ mod tests {
                                     build_path: Some("build/build.rs".into()),
                                     proc_macro: true,
                                     dependencies: Default::default(),
+                                    build_dependencies: Default::default(),
                                     features: Default::default(),
                                     enabled_features: Default::default(),
                                     edition: "2018".to_string(),
@@ -1385,7 +1386,38 @@ mod tests {
                                 optional: false,
                                 uses_default_features: true,
                                 features: Default::default(),
-                                kind: DependencyKind::Normal,
+                            },
+                        ],
+                        build_dependencies: vec![
+                            DependencyNode {
+                                package: RefCell::new(PackageNode {
+                                    id: PackageId {
+                                        repr:
+                                            "arbitrary 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)"
+                                                .to_string()
+                                    },
+                                    name: "arbitrary".to_string(),
+                                    version: "1.3.0".parse().unwrap(),
+                                    package_path: Utf8PathBuf::from_path_buf(
+                                        registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0")
+                                    )
+                                    .unwrap(),
+                                    lib_path: Some("src/lib.rs".into()),
+                                    build_path: None,
+                                    proc_macro: false,
+                                    dependencies: Default::default(),
+                                    build_dependencies: Default::default(),
+                                    features: HashMap::from([
+                                        ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
+                                        ("derive_arbitrary".to_string(), vec!["dep:derive_arbitrary".to_string()]),
+                                    ]),
+                                    enabled_features: Default::default(),
+                                    edition: "2018".to_string(),
+                                })
+                                .into(),
+                                optional: false,
+                                uses_default_features: true,
+                                features: Default::default(),
                             },
                         ],
                         features: HashMap::from([
@@ -1403,7 +1435,6 @@ mod tests {
                     optional: false,
                     uses_default_features: false,
                     features: vec!["one".to_string()],
-                    kind: DependencyKind::Normal,
                 },
                 DependencyNode {
                     package: RefCell::new(PackageNode {
@@ -1422,6 +1453,7 @@ mod tests {
                         build_path: None,
                         proc_macro: false,
                         dependencies: Default::default(),
+                        build_dependencies: Default::default(),
                         features: HashMap::from([
                             ("default".to_string(), vec!["std".to_string()]),
                             ("no-panic".to_string(), vec!["dep:no-panic".to_string()]),
@@ -1435,21 +1467,18 @@ mod tests {
                     optional: false,
                     uses_default_features: true,
                     features: Default::default(),
-                    kind: DependencyKind::Normal,
                 },
                 DependencyNode {
                     package: libc,
                     optional: false,
                     uses_default_features: true,
                     features: Default::default(),
-                    kind: DependencyKind::Normal,
                 },
                 DependencyNode {
                     package: optional,
                     optional: true,
                     uses_default_features: true,
                     features: Default::default(),
-                    kind: DependencyKind::Normal,
                 },
                 DependencyNode {
                     package: RefCell::new(PackageNode {
@@ -1466,6 +1495,7 @@ mod tests {
                         build_path: None,
                         proc_macro: false,
                         dependencies: Default::default(),
+                        build_dependencies: Default::default(),
                         features: HashMap::from([
                             ("unix".to_string(), vec![]),
                             ("windows".to_string(), vec![]),
@@ -1477,9 +1507,9 @@ mod tests {
                     optional: false,
                     uses_default_features: true,
                     features: vec!["unix".to_string()],
-                    kind: DependencyKind::Normal,
                 },
             ],
+            build_dependencies: Default::default(),
             features: Default::default(),
             enabled_features: Default::default(),
             edition: "2021".to_string(),
@@ -1667,6 +1697,7 @@ mod tests {
             build_path: None,
             proc_macro: false,
             dependencies,
+            build_dependencies: Default::default(),
             features: HashMap::from_iter(features.into_iter().map(|(b, d)| {
                 (
                     b.to_string(),
@@ -1699,7 +1730,6 @@ mod tests {
                 optional: false,
                 uses_default_features: false,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1714,7 +1744,6 @@ mod tests {
                 optional: false,
                 uses_default_features: false,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1742,7 +1771,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1759,7 +1787,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1787,7 +1814,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1804,7 +1830,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1832,7 +1857,6 @@ mod tests {
                 optional: true,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1846,7 +1870,6 @@ mod tests {
                 optional: true,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1866,7 +1889,6 @@ mod tests {
                 optional: true,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1880,7 +1902,6 @@ mod tests {
                 optional: true,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1908,7 +1929,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1925,7 +1945,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1947,7 +1966,6 @@ mod tests {
                 optional: true,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1959,7 +1977,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -1979,7 +1996,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2001,7 +2017,6 @@ mod tests {
                 optional: true,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2013,7 +2028,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2039,7 +2053,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2065,7 +2078,6 @@ mod tests {
                 optional: true,
                 uses_default_features: true,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2077,7 +2089,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2102,7 +2113,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2128,7 +2138,6 @@ mod tests {
                 optional: true,
                 uses_default_features: false,
                 features: vec![],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2140,7 +2149,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
@@ -2160,7 +2168,6 @@ mod tests {
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
-                kind: DependencyKind::Normal,
             }),
         );
 
