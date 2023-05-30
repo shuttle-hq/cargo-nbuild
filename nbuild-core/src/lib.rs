@@ -10,6 +10,7 @@ use std::{
 use cargo_metadata::{
     camino::Utf8PathBuf, semver::Version, DependencyKind, MetadataCommand, PackageId,
 };
+use target_spec::{Platform, TargetSpec};
 use visitor::{
     EnableFeaturesVisitor, NoDefaultsVisitor, SetDefaultVisitor, UnpackChainVisitor,
     UnpackDefaultVisitor, Visitor,
@@ -231,11 +232,13 @@ pub struct DependencyNode {
 
 impl PackageNode {
     pub fn from_current_dir(path: impl Into<PathBuf>) -> Self {
+        let platform = Platform::current().unwrap();
+
         let metadata = MetadataCommand::new()
             .current_dir(path)
             .other_options(vec![
                 "--filter-platform".to_string(),
-                "x86_64-unknown-linux-gnu".to_string(),
+                platform.triple_str().to_string(),
             ])
             .exec()
             .unwrap();
@@ -263,7 +266,13 @@ impl PackageNode {
 
         let mut resolved_packages = Default::default();
 
-        Self::get_package(root_id, &packages, &nodes, &mut resolved_packages)
+        Self::get_package(
+            root_id,
+            &packages,
+            &nodes,
+            &mut resolved_packages,
+            &platform,
+        )
     }
 
     fn get_package(
@@ -271,6 +280,7 @@ impl PackageNode {
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
         nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
         resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<PackageNode>>>,
+        platform: &Platform,
     ) -> Self {
         let node = nodes.get(&id).unwrap().clone();
         let package = packages.get(&id).unwrap();
@@ -280,7 +290,14 @@ impl PackageNode {
             .dependencies
             .iter()
             .map(|id| {
-                DependencyNode::get_dependency(id, package, packages, nodes, resolved_packages)
+                DependencyNode::get_dependency(
+                    id,
+                    package,
+                    packages,
+                    nodes,
+                    resolved_packages,
+                    platform,
+                )
             })
             .collect();
 
@@ -436,6 +453,7 @@ impl DependencyNode {
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
         nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
         resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<PackageNode>>>,
+        platform: &Platform,
     ) -> Self {
         // We eventually want only one representation of a package when we do feature resolution
         let package = match resolved_packages.get(id) {
@@ -446,6 +464,7 @@ impl DependencyNode {
                     packages,
                     nodes,
                     resolved_packages,
+                    platform,
                 ))
                 .into();
 
@@ -457,18 +476,44 @@ impl DependencyNode {
 
         let name = package.borrow().name.clone();
 
-        let details = parent_package
+        let dependencies = parent_package
             .dependencies
             .iter()
-            .find(|d| d.name == name)
-            .unwrap();
+            .filter(|d| d.name == name)
+            .filter(|d| match &d.target {
+                Some(target_spec) => {
+                    let target_spec = TargetSpec::new(target_spec.to_string()).unwrap();
+
+                    target_spec.eval(platform).unwrap_or(false)
+                }
+                None => true,
+            });
+
+        let mut optional = true;
+        let mut uses_default_features = false;
+        let mut features: Vec<String> = Default::default();
+        let mut kind = Default::default();
+
+        for dependency in dependencies {
+            if !dependency.optional {
+                optional = false;
+            }
+
+            if dependency.uses_default_features {
+                uses_default_features = true;
+            }
+
+            features.extend(dependency.features.iter().cloned());
+
+            kind = dependency.kind;
+        }
 
         Self {
             package,
-            optional: details.optional,
-            uses_default_features: details.uses_default_features,
-            features: details.features.clone(),
-            kind: details.kind,
+            optional,
+            uses_default_features,
+            features,
+            kind,
         }
     }
 }
@@ -889,6 +934,34 @@ mod tests {
                         features: Default::default(),
                         kind: DependencyKind::Normal,
                     },
+                    DependencyNode {
+                        package: RefCell::new(PackageNode {
+                            id: PackageId {
+                                repr: format!(
+                                    "targets 0.1.0 (path+file://{})",
+                                    workspace.join("targets").display()
+                                ),
+                            },
+                            name: "targets".to_string(),
+                            version: "0.1.0".parse().unwrap(),
+                            package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
+                            lib_path: Some("src/lib.rs".into()),
+                            build_path: None,
+                            proc_macro: false,
+                            dependencies: Default::default(),
+                            features: HashMap::from([
+                                ("unix".to_string(), vec![]),
+                                ("windows".to_string(), vec![]),
+                            ]),
+                            enabled_features: Default::default(),
+                            edition: "2021".to_string(),
+                        })
+                        .into(),
+                        optional: false,
+                        uses_default_features: true,
+                        features: vec!["unix".to_string()],
+                        kind: DependencyKind::Normal,
+                    },
                 ],
                 features: Default::default(),
                 enabled_features: Default::default(),
@@ -1036,6 +1109,20 @@ mod tests {
                 })
                 .into(),
                 libc,
+                RefCell::new(Package {
+                    name: "targets".to_string(),
+                    version: "0.1.0".parse().unwrap(),
+                    package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
+                    lib_path: None,
+                    build_path: None,
+                    proc_macro: false,
+                    dependencies: Default::default(),
+                    build_dependencies: Default::default(),
+                    features: vec!["unix".to_string()],
+                    edition: "2021".to_string(),
+                    printed: false,
+                })
+                .into(),
             ],
             build_dependencies: Default::default(),
             features: Default::default(),
@@ -1345,7 +1432,35 @@ mod tests {
                     uses_default_features: true,
                     features: Default::default(),
                     kind: DependencyKind::Normal,
-                }
+                },
+                DependencyNode {
+                    package: RefCell::new(PackageNode {
+                        id: PackageId {
+                            repr: format!(
+                                "targets 0.1.0 (path+file://{})",
+                                workspace.join("targets").display()
+                            ),
+                        },
+                        name: "targets".to_string(),
+                        version: "0.1.0".parse().unwrap(),
+                        package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
+                        lib_path: Some("src/lib.rs".into()),
+                        build_path: None,
+                        proc_macro: false,
+                        dependencies: Default::default(),
+                        features: HashMap::from([
+                            ("unix".to_string(), vec![]),
+                            ("windows".to_string(), vec![]),
+                        ]),
+                        enabled_features: HashSet::from(["unix".to_string()]),
+                        edition: "2021".to_string(),
+                    })
+                    .into(),
+                    optional: false,
+                    uses_default_features: true,
+                    features: vec!["unix".to_string()],
+                    kind: DependencyKind::Normal,
+                },
             ],
             features: Default::default(),
             enabled_features: Default::default(),
@@ -1480,6 +1595,20 @@ mod tests {
                 })
                 .into(),
                 libc,
+                RefCell::new(Package {
+                    name: "targets".to_string(),
+                    version: "0.1.0".parse().unwrap(),
+                    package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
+                    lib_path: None,
+                    build_path: None,
+                    proc_macro: false,
+                    dependencies: Default::default(),
+                    build_dependencies: Default::default(),
+                    features: vec!["unix".to_string()],
+                    edition: "2021".to_string(),
+                    printed: false,
+                })
+                .into(),
             ],
             build_dependencies: Default::default(),
             features: Default::default(),

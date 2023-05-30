@@ -9,3 +9,11 @@ edition = "2021"
 child = { path = "../child", default-features = false, features = ["one"] }
 libc = "0.2"
 itoa = "0.4"
+
+targets = { path = "../targets" }
+
+[target.'cfg(windows)'.dependencies]
+targets = { path = "../targets", features = ["windows"] }
+
+[target.'cfg(unix)'.dependencies]
+targets = { path = "../targets", features = ["unix"] }

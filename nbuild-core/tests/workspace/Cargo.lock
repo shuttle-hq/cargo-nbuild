@@ -43,6 +43,7 @@ dependencies = [
  "child",
  "itoa 0.4.8",
  "libc",
+ "targets",
 ]
 
 [[package]]
@@ -50,3 +51,7 @@ name = "rustversion"
 version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f3208ce4d8448b3f3e7d168a73f5e0c43a61e32930de3bceeccedb388b6bf06"
+
+[[package]]
+name = "targets"
+version = "0.1.0"
