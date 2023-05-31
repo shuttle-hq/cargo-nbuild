@@ -244,7 +244,7 @@ impl PackageNode {
             .exec()
             .unwrap();
 
-        trace!(?platform, "using platform");
+        trace!(?platform, ?metadata, "have metadata");
 
         let packages =
             BTreeMap::from_iter(metadata.packages.iter().map(|p| (p.id.clone(), p.clone())));
@@ -257,8 +257,6 @@ impl PackageNode {
                 .iter()
                 .map(|n| (n.id.clone(), n.clone())),
         );
-
-        trace!(?packages, ?nodes, "packages and nodes");
 
         let root_id = metadata
             .resolve
