@@ -8,7 +8,7 @@ use std::{
 };
 
 use cargo_metadata::{
-    camino::Utf8PathBuf, semver::Version, Dependency, DependencyKind, MetadataCommand, PackageId,
+    camino::Utf8PathBuf, semver::Version, DependencyKind, MetadataCommand, PackageId,
 };
 use target_spec::{Platform, TargetSpec};
 use tracing::{instrument, trace};
@@ -26,10 +26,16 @@ pub struct Package {
     build_path: Option<Utf8PathBuf>,
     proc_macro: bool,
     features: Vec<String>,
-    dependencies: Vec<Rc<RefCell<Package>>>,
-    build_dependencies: Vec<Rc<RefCell<Package>>>,
+    dependencies: Vec<Dependency>,
+    build_dependencies: Vec<Dependency>,
     edition: String,
     printed: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Dependency {
+    package: Rc<RefCell<Package>>,
+    rename: Option<String>,
 }
 
 impl Package {
@@ -52,8 +58,8 @@ impl Package {
         let dep_idents: Vec<_> = dependencies
             .into_iter()
             .map(|d| {
-                let identifier = d.borrow().identifier();
-                Self::to_details(d, &mut build_details);
+                let identifier = d.package.borrow().identifier();
+                Self::to_details(&d, &mut build_details);
                 identifier
             })
             .collect();
@@ -64,8 +70,8 @@ impl Package {
             let dep_idents: Vec<_> = build_dependencies
                 .into_iter()
                 .map(|d| {
-                    let identifier = d.borrow().identifier();
-                    Self::to_details(d, &mut build_details);
+                    let identifier = d.package.borrow().identifier();
+                    Self::to_details(&d, &mut build_details);
                     identifier
                 })
                 .collect();
@@ -106,8 +112,8 @@ in
         )
     }
 
-    fn to_details(dependency: Rc<RefCell<Self>>, build_details: &mut Vec<String>) {
-        let mut this = dependency.borrow_mut();
+    fn to_details(dependency: &Dependency, build_details: &mut Vec<String>) {
+        let mut this = dependency.package.borrow_mut();
 
         // Only print once
         if this.printed {
@@ -143,13 +149,21 @@ in
             Default::default()
         };
 
+        let mut renames = Vec::new();
+
         let deps = if this.dependencies.is_empty() {
             Default::default()
         } else {
             let dep_idents: Vec<_> = this
                 .dependencies
                 .iter()
-                .map(|d| d.borrow().identifier())
+                .map(|d| {
+                    if let Some(rename) = &d.rename {
+                        renames.push((d.package.borrow().name.clone(), rename.clone()));
+                    }
+
+                    d.package.borrow().identifier()
+                })
                 .collect();
             format!("\n    dependencies = [{}];", dep_idents.join(" "))
         };
@@ -159,9 +173,26 @@ in
             let dep_idents: Vec<_> = this
                 .build_dependencies
                 .iter()
-                .map(|d| d.borrow().identifier())
+                .map(|d| {
+                    if let Some(rename) = &d.rename {
+                        renames.push((d.package.borrow().name.clone(), rename.clone()));
+                    }
+
+                    d.package.borrow().identifier()
+                })
                 .collect();
             format!("\n    buildDependencies = [{}];", dep_idents.join(" "))
+        };
+        let crate_renames = if renames.is_empty() {
+            Default::default()
+        } else {
+            let renames = renames
+                .into_iter()
+                .map(|(name, rename)| format!("\"{name}\" = \"{rename}\";"))
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            format!("\n    crateRenames = {{{renames}}};")
         };
 
         let details = format!(
@@ -169,7 +200,7 @@ in
     crateName = "{}";
     version = "{}";
 
-    src = {};{}{}{}{}{}{}
+    src = {};{}{}{}{}{}{}{}
     edition = "{}";
   }};"#,
             this.identifier(),
@@ -181,6 +212,7 @@ in
             proc_macro,
             deps,
             build_deps,
+            crate_renames,
             features,
             this.edition,
         );
@@ -188,11 +220,11 @@ in
         build_details.push(details);
 
         for dependency in this.dependencies.iter() {
-            Self::to_details(Rc::clone(dependency), build_details);
+            Self::to_details(dependency, build_details);
         }
 
         for build_dependency in this.build_dependencies.iter() {
-            Self::to_details(Rc::clone(build_dependency), build_details);
+            Self::to_details(build_dependency, build_details);
         }
 
         this.printed = true;
@@ -209,7 +241,6 @@ in
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct PackageNode {
-    id: PackageId,
     name: String,
     version: Version,
     package_path: Utf8PathBuf,
@@ -225,6 +256,7 @@ pub struct PackageNode {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct DependencyNode {
+    name: String,
     package: Rc<RefCell<PackageNode>>,
     optional: bool,
     uses_default_features: bool,
@@ -373,7 +405,6 @@ impl PackageNode {
             .any(|t| t.kind.iter().any(|k| k == "proc-macro"));
 
         Self {
-            id: id.clone(),
             name: package.name.clone(),
             version: package.version.clone(),
             package_path,
@@ -399,12 +430,12 @@ impl PackageNode {
         Rc::try_unwrap(result).unwrap().into_inner()
     }
 
+    #[instrument(skip_all, fields(name = %self.name))]
     fn convert_to_package(
         self,
-        converted: &mut BTreeMap<PackageId, Rc<RefCell<Package>>>,
+        converted: &mut BTreeMap<(String, Version), Rc<RefCell<Package>>>,
     ) -> Rc<RefCell<Package>> {
         let Self {
-            id,
             name,
             version,
             package_path,
@@ -418,27 +449,47 @@ impl PackageNode {
             edition,
         } = self;
 
-        match converted.get(&id) {
+        match converted.get(&(name.clone(), version.clone())) {
             Some(package) => Rc::clone(package),
             None => {
                 let dependencies = dependencies
                     .iter()
                     .filter(|d| !d.optional)
                     .map(|d| {
-                        Rc::clone(&d.package)
+                        let package = Rc::clone(&d.package)
                             .borrow()
                             .clone()
-                            .convert_to_package(converted)
+                            .convert_to_package(converted);
+
+                        let rename = if d.name == package.borrow().name {
+                            None
+                        } else {
+                            trace!(dependency_name = d.name, "activating rename");
+
+                            Some(d.name.to_string())
+                        };
+
+                        Dependency { package, rename }
                     })
                     .collect();
                 let build_dependencies = build_dependencies
                     .iter()
                     .filter(|d| !d.optional)
                     .map(|d| {
-                        Rc::clone(&d.package)
+                        let package = Rc::clone(&d.package)
                             .borrow()
                             .clone()
-                            .convert_to_package(converted)
+                            .convert_to_package(converted);
+
+                        let rename = if d.name == package.borrow().name {
+                            None
+                        } else {
+                            trace!(dependency_name = d.name, "activating rename");
+
+                            Some(d.name.to_string())
+                        };
+
+                        Dependency { package, rename }
                     })
                     .collect();
 
@@ -448,8 +499,8 @@ impl PackageNode {
                     build_path.and_then(|p| if p == "build.rs" { None } else { Some(p) });
 
                 let package = RefCell::new(Package {
-                    name,
-                    version,
+                    name: name.clone(),
+                    version: version.clone(),
                     package_path,
                     lib_path,
                     build_path,
@@ -462,7 +513,7 @@ impl PackageNode {
                 })
                 .into();
 
-                converted.insert(id, Rc::clone(&package));
+                converted.insert((name, version), Rc::clone(&package));
 
                 package
             }
@@ -486,7 +537,7 @@ impl DependencyNode {
     #[instrument(skip_all, fields(%id))]
     fn get_dependency(
         id: &PackageId,
-        parent_dependencies: &Vec<Dependency>,
+        parent_dependencies: &Vec<cargo_metadata::Dependency>,
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
         nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
         resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<PackageNode>>>,
@@ -535,6 +586,8 @@ impl DependencyNode {
         let mut optional = true;
         let mut uses_default_features = false;
         let mut features: Vec<String> = Default::default();
+        let mut dependency_name: String = Default::default();
+        let mut dependency_rename = None;
 
         for dependency in dependencies {
             if !dependency.optional {
@@ -546,10 +599,23 @@ impl DependencyNode {
             }
 
             features.extend(dependency.features.iter().cloned());
+
+            if dependency_rename.is_none() && dependency.rename.is_some() {
+                dependency_rename = dependency.rename.clone();
+            }
+
+            if dependency_name.is_empty() {
+                dependency_name = dependency.name.clone();
+            }
         }
 
+        if let Some(dependency_rename) = dependency_rename {
+            dependency_name = dependency_rename;
+        };
+
         trace!(
-            name = package.borrow().name,
+            name,
+            dependency_name,
             optional,
             uses_default_features,
             ?features,
@@ -557,6 +623,7 @@ impl DependencyNode {
         );
 
         Some(Self {
+            name: dependency_name,
             package,
             optional,
             uses_default_features,
@@ -572,6 +639,15 @@ mod tests {
     use super::*;
 
     use pretty_assertions::assert_eq;
+
+    impl From<Package> for Dependency {
+        fn from(package: Package) -> Self {
+            Self {
+                package: Rc::new(RefCell::new(package)),
+                rename: None,
+            }
+        }
+    }
 
     #[test]
     fn simple_package_input() {
@@ -589,79 +665,67 @@ mod tests {
         assert_eq!(
             package,
             PackageNode {
-                id: PackageId {
-                    repr: format!("simple 0.1.0 (path+file://{})", path.display()),
-                },
                 name: "simple".to_string(),
                 package_path: Utf8PathBuf::from_path_buf(path).unwrap(),
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
                 version: "0.1.0".parse().unwrap(),
-                dependencies: vec![
-                    DependencyNode {
-                        package: RefCell::new(PackageNode {
-                            id: PackageId {
-                                repr:
-                                    "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
-                                        .to_string()
-                            },
-                            name: "itoa".to_string(),
-                            version: "1.0.6".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
-                            )
-                            .unwrap(),
-                            lib_path: Some("src/lib.rs".into()),
-                            build_path: None,
-                            proc_macro: false,
-                            dependencies: Default::default(),
-                            build_dependencies: Default::default(),
-                            features: HashMap::from([(
-                                "no-panic".to_string(),
-                                vec!["dep:no-panic".to_string()]
-                            )]),
-                            enabled_features: Default::default(),
-                            edition: "2018".to_string(),
-                        })
-                        .into(),
-                        optional: false,
-                        uses_default_features: true,
-                        features: Default::default(),
-                    },
-                ],
-                build_dependencies: vec![
-                    DependencyNode {
-                        package: RefCell::new(PackageNode {
-                            id: PackageId {
-                                repr:
-                                    "arbitrary 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)"
-                                        .to_string()
-                            },
-                            name: "arbitrary".to_string(),
-                            version: "1.3.0".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0")
-                            )
-                            .unwrap(),
-                            lib_path: Some("src/lib.rs".into()),
-                            build_path: None,
-                            proc_macro: false,
-                            dependencies: Default::default(),
-                            build_dependencies: Default::default(),
-                            features: HashMap::from([
-                                ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
-                                ("derive_arbitrary".to_string(), vec!["dep:derive_arbitrary".to_string()]),
-                            ]),
-                            enabled_features: Default::default(),
-                            edition: "2018".to_string(),
-                        })
-                        .into(),
-                        optional: false,
-                        uses_default_features: true,
-                        features: Default::default(),
-                    },
-                ],
+                dependencies: vec![DependencyNode {
+                    name: "itoa".to_string(),
+                    package: RefCell::new(PackageNode {
+                        name: "itoa".to_string(),
+                        version: "1.0.6".parse().unwrap(),
+                        package_path: Utf8PathBuf::from_path_buf(
+                            registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
+                        )
+                        .unwrap(),
+                        lib_path: Some("src/lib.rs".into()),
+                        build_path: None,
+                        proc_macro: false,
+                        dependencies: Default::default(),
+                        build_dependencies: Default::default(),
+                        features: HashMap::from([(
+                            "no-panic".to_string(),
+                            vec!["dep:no-panic".to_string()]
+                        )]),
+                        enabled_features: Default::default(),
+                        edition: "2018".to_string(),
+                    })
+                    .into(),
+                    optional: false,
+                    uses_default_features: true,
+                    features: Default::default(),
+                },],
+                build_dependencies: vec![DependencyNode {
+                    name: "arbitrary".to_string(),
+                    package: RefCell::new(PackageNode {
+                        name: "arbitrary".to_string(),
+                        version: "1.3.0".parse().unwrap(),
+                        package_path: Utf8PathBuf::from_path_buf(
+                            registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0")
+                        )
+                        .unwrap(),
+                        lib_path: Some("src/lib.rs".into()),
+                        build_path: None,
+                        proc_macro: false,
+                        dependencies: Default::default(),
+                        build_dependencies: Default::default(),
+                        features: HashMap::from([
+                            ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
+                            (
+                                "derive_arbitrary".to_string(),
+                                vec!["dep:derive_arbitrary".to_string()]
+                            ),
+                        ]),
+                        enabled_features: Default::default(),
+                        edition: "2018".to_string(),
+                    })
+                    .into(),
+                    optional: false,
+                    uses_default_features: true,
+                    features: Default::default(),
+                },],
                 features: Default::default(),
                 enabled_features: Default::default(),
                 edition: "2021".to_string(),
@@ -683,7 +747,7 @@ mod tests {
             lib_path: None,
             build_path: None,
             proc_macro: false,
-            dependencies: vec![RefCell::new(Package {
+            dependencies: vec![Package {
                 name: "itoa".to_string(),
                 version: "1.0.6".parse().unwrap(),
                 package_path:
@@ -698,9 +762,9 @@ mod tests {
                 features: Default::default(),
                 edition: "2018".to_string(),
                 printed: false,
-            })
+            }
             .into()],
-            build_dependencies: vec![RefCell::new(Package {
+            build_dependencies: vec![Package {
                 name: "arbitrary".to_string(),
                 version: "1.3.0".parse().unwrap(),
                 package_path:
@@ -715,7 +779,7 @@ mod tests {
                 features: Default::default(),
                 edition: "2018".to_string(),
                 printed: false,
-            })
+            }
             .into()],
             features: Default::default(),
             edition: "2021".to_string(),
@@ -747,12 +811,6 @@ mod tests {
         assert_eq!(
             package,
             PackageNode {
-                id: PackageId {
-                    repr: format!(
-                        "parent 0.1.0 (path+file://{})",
-                        workspace.join("parent").display()
-                    ),
-                },
                 name: "parent".to_string(),
                 version: "0.1.0".parse().unwrap(),
                 package_path: Utf8PathBuf::from_path_buf(path).unwrap(),
@@ -761,31 +819,24 @@ mod tests {
                 proc_macro: false,
                 dependencies: vec![
                     DependencyNode {
+                        name: "child".to_string(),
                         package: RefCell::new(PackageNode {
-                            id: PackageId {
-                                repr: format!(
-                                    "child 0.1.0 (path+file://{})",
-                                    workspace.join("child").display()
-                                ),
-                            },
                             name: "child".to_string(),
                             version: "0.1.0".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
+                            package_path: Utf8PathBuf::from_path_buf(workspace.join("child"))
+                                .unwrap(),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
                             dependencies: vec![
                                 DependencyNode {
+                                    name: "fnv".to_string(),
                                     package: RefCell::new(PackageNode {
-                                        id: PackageId {
-                                            repr:
-                                                "fnv 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                    .to_string()
-                                        },
                                         name: "fnv".to_string(),
                                         version: "1.0.7".parse().unwrap(),
                                         package_path: Utf8PathBuf::from_path_buf(
-                                            registry.join("src/github.com-1ecc6299db9ec823/fnv-1.0.7")
+                                            registry
+                                                .join("src/github.com-1ecc6299db9ec823/fnv-1.0.7")
                                         )
                                         .unwrap(),
                                         lib_path: Some("lib.rs".into()),
@@ -806,16 +857,13 @@ mod tests {
                                     features: Default::default(),
                                 },
                                 DependencyNode {
+                                    name: "itoa".to_string(),
                                     package: RefCell::new(PackageNode {
-                                        id: PackageId {
-                                            repr:
-                                                "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                    .to_string()
-                                        },
                                         name: "itoa".to_string(),
                                         version: "1.0.6".parse().unwrap(),
                                         package_path: Utf8PathBuf::from_path_buf(
-                                            registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
+                                            registry
+                                                .join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
                                         )
                                         .unwrap(),
                                         lib_path: Some("src/lib.rs".into()),
@@ -836,16 +884,14 @@ mod tests {
                                     features: Default::default(),
                                 },
                                 DependencyNode {
+                                    name: "libc".to_string(),
                                     package: RefCell::new(PackageNode {
-                                        id: PackageId {
-                                            repr:
-                                                "libc 0.2.144 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                    .to_string()
-                                        },
                                         name: "libc".to_string(),
                                         version: "0.2.144".parse().unwrap(),
                                         package_path: Utf8PathBuf::from_path_buf(
-                                            registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144")
+                                            registry.join(
+                                                "src/github.com-1ecc6299db9ec823/libc-0.2.144"
+                                            )
                                         )
                                         .unwrap(),
                                         lib_path: Some("src/lib.rs".into()),
@@ -859,9 +905,18 @@ mod tests {
                                             ("use_std".to_string(), vec!["std".to_string()]),
                                             ("extra_traits".to_string(), vec![]),
                                             ("align".to_string(), vec![]),
-                                            ("rustc-dep-of-std".to_string(), vec!["align".to_string(), "rustc-std-workspace-core".to_string()]),
+                                            (
+                                                "rustc-dep-of-std".to_string(),
+                                                vec![
+                                                    "align".to_string(),
+                                                    "rustc-std-workspace-core".to_string()
+                                                ]
+                                            ),
                                             ("const-extern-fn".to_string(), vec![]),
-                                            ("rustc-std-workspace-core".to_string(), vec!["dep:rustc-std-workspace-core".to_string()]),
+                                            (
+                                                "rustc-std-workspace-core".to_string(),
+                                                vec!["dep:rustc-std-workspace-core".to_string()]
+                                            ),
                                         ]),
                                         enabled_features: Default::default(),
                                         edition: "2015".to_string(),
@@ -872,17 +927,36 @@ mod tests {
                                     features: Default::default(),
                                 },
                                 DependencyNode {
+                                    name: "new_name".to_string(),
                                     package: RefCell::new(PackageNode {
-                                        id: PackageId {
-                                            repr:
-                                                "rustversion 1.0.12 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                    .to_string()
-                                        },
+                                        name: "rename".to_string(),
+                                        version: "0.1.0".parse().unwrap(),
+                                        package_path: Utf8PathBuf::from_path_buf(
+                                            workspace.join("rename")
+                                        )
+                                        .unwrap(),
+                                        lib_path: Some("src/lib.rs".into()),
+                                        build_path: None,
+                                        proc_macro: false,
+                                        dependencies: Default::default(),
+                                        build_dependencies: Default::default(),
+                                        features: Default::default(),
+                                        enabled_features: Default::default(),
+                                        edition: "2021".to_string(),
+                                    })
+                                    .into(),
+                                    optional: true,
+                                    uses_default_features: true,
+                                    features: Default::default(),
+                                },
+                                DependencyNode {
+                                    name: "rustversion".to_string(),
+                                    package: RefCell::new(PackageNode {
                                         name: "rustversion".to_string(),
                                         version: "1.0.12".parse().unwrap(),
-                                        package_path: Utf8PathBuf::from_path_buf(
-                                            registry.join("src/github.com-1ecc6299db9ec823/rustversion-1.0.12")
-                                        )
+                                        package_path: Utf8PathBuf::from_path_buf(registry.join(
+                                            "src/github.com-1ecc6299db9ec823/rustversion-1.0.12"
+                                        ))
                                         .unwrap(),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: Some("build/build.rs".into()),
@@ -905,8 +979,9 @@ mod tests {
                                     "default".to_string(),
                                     vec!["one".to_string(), "two".to_string()]
                                 ),
-                                ("one".to_string(), vec![]),
+                                ("one".to_string(), vec!["new_name".to_string()]),
                                 ("two".to_string(), vec![]),
+                                ("new_name".to_string(), vec!["dep:new_name".to_string()]),
                             ]),
                             enabled_features: Default::default(),
                             edition: "2021".to_string(),
@@ -917,12 +992,8 @@ mod tests {
                         features: vec!["one".to_string()],
                     },
                     DependencyNode {
+                        name: "itoa".to_string(),
                         package: RefCell::new(PackageNode {
-                            id: PackageId {
-                                repr:
-                                    "itoa 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)"
-                                        .to_string()
-                            },
                             name: "itoa".to_string(),
                             version: "0.4.8".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(
@@ -948,12 +1019,8 @@ mod tests {
                         features: Default::default(),
                     },
                     DependencyNode {
+                        name: "libc".to_string(),
                         package: RefCell::new(PackageNode {
-                            id: PackageId {
-                                repr:
-                                    "libc 0.2.144 (registry+https://github.com/rust-lang/crates.io-index)"
-                                        .to_string()
-                            },
                             name: "libc".to_string(),
                             version: "0.2.144".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(
@@ -971,9 +1038,18 @@ mod tests {
                                 ("use_std".to_string(), vec!["std".to_string()]),
                                 ("extra_traits".to_string(), vec![]),
                                 ("align".to_string(), vec![]),
-                                ("rustc-dep-of-std".to_string(), vec!["align".to_string(), "rustc-std-workspace-core".to_string()]),
+                                (
+                                    "rustc-dep-of-std".to_string(),
+                                    vec![
+                                        "align".to_string(),
+                                        "rustc-std-workspace-core".to_string()
+                                    ]
+                                ),
                                 ("const-extern-fn".to_string(), vec![]),
-                                ("rustc-std-workspace-core".to_string(), vec!["dep:rustc-std-workspace-core".to_string()]),
+                                (
+                                    "rustc-std-workspace-core".to_string(),
+                                    vec!["dep:rustc-std-workspace-core".to_string()]
+                                ),
                             ]),
                             enabled_features: Default::default(),
                             edition: "2015".to_string(),
@@ -984,16 +1060,12 @@ mod tests {
                         features: Default::default(),
                     },
                     DependencyNode {
+                        name: "targets".to_string(),
                         package: RefCell::new(PackageNode {
-                            id: PackageId {
-                                repr: format!(
-                                    "targets 0.1.0 (path+file://{})",
-                                    workspace.join("targets").display()
-                                ),
-                            },
                             name: "targets".to_string(),
                             version: "0.1.0".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
+                            package_path: Utf8PathBuf::from_path_buf(workspace.join("targets"))
+                                .unwrap(),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -1059,7 +1131,7 @@ mod tests {
             build_path: None,
             proc_macro: false,
             dependencies: vec![
-                RefCell::new(Package {
+                Package {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
@@ -1067,7 +1139,7 @@ mod tests {
                     build_path: None,
                     proc_macro: false,
                     dependencies: vec![
-                        RefCell::new(Package {
+                        Package {
                             name: "fnv".to_string(),
                             version: "1.0.7".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(
@@ -1082,9 +1154,8 @@ mod tests {
                             features: Default::default(),
                             edition: "2015".to_string(),
                             printed: false,
-                        })
-                        .into(),
-                        RefCell::new(Package {
+                        }.into(),
+                        Package {
                             name: "itoa".to_string(),
                             version: "1.0.6".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(
@@ -1099,10 +1170,30 @@ mod tests {
                             features: Default::default(),
                             edition: "2018".to_string(),
                             printed: false,
-                        })
-                        .into(),
-                        Rc::clone(&libc),
-                        RefCell::new(Package {
+                        }.into(),
+                        Dependency{
+                            package: Rc::clone(&libc),
+                            rename: None,
+                        },
+                        Dependency {
+                            package: RefCell::new(Package {
+                                name: "rename".to_string(),
+                                version: "0.1.0".parse().unwrap(),
+                                package_path: Utf8PathBuf::from_path_buf(workspace.join("rename"))
+                                    .unwrap(),
+                                lib_path: None,
+                                build_path: None,
+                                proc_macro: false,
+                                dependencies: Default::default(),
+                                build_dependencies: Default::default(),
+                                features: Default::default(),
+                                edition: "2021".to_string(),
+                                printed: false,
+                            })
+                            .into(),
+                            rename: Some("new_name".to_string()),
+                        },
+                        Package {
                             name: "rustversion".to_string(),
                             version: "1.0.12".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(
@@ -1117,10 +1208,9 @@ mod tests {
                             features: Default::default(),
                             edition: "2018".to_string(),
                             printed: false,
-                        })
-                        .into(),
+                        }.into(),
                     ],
-                    build_dependencies: vec![RefCell::new(Package {
+                    build_dependencies: vec![Package {
                         name: "arbitrary".to_string(),
                         version: "1.3.0".parse().unwrap(),
                         package_path: "/home/user/.cargo/registry/src/github.com-1ecc6299db9ec823/arbitrary-1.3.0"
@@ -1134,14 +1224,12 @@ mod tests {
                         features: Default::default(),
                         edition: "2018".to_string(),
                         printed: false,
-                    })
-                    .into()],
+                    }.into()],
                     features: vec!["one".to_string()],
                     edition: "2021".to_string(),
                     printed: false,
-                })
-                .into(),
-                RefCell::new(Package {
+                }.into(),
+                Package {
                     name: "itoa".to_string(),
                     version: "0.4.8".parse().unwrap(),
                     package_path: Utf8PathBuf::from_path_buf(
@@ -1156,10 +1244,12 @@ mod tests {
                     features: Default::default(),
                     edition: "2018".to_string(),
                     printed: false,
-                })
-                .into(),
-                libc,
-                RefCell::new(Package {
+                }.into(),
+                Dependency {
+                    package: libc,
+                    rename: None,
+                },
+                Package {
                     name: "targets".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
@@ -1171,8 +1261,7 @@ mod tests {
                     features: vec!["unix".to_string()],
                     edition: "2021".to_string(),
                     printed: false,
-                })
-                .into(),
+                }.into(),
             ],
             build_dependencies: Default::default(),
             features: Default::default(),
@@ -1201,10 +1290,6 @@ mod tests {
             .join("registry");
 
         let libc = RefCell::new(PackageNode {
-            id: PackageId {
-                repr: "libc 0.2.144 (registry+https://github.com/rust-lang/crates.io-index)"
-                    .to_string(),
-            },
             name: "libc".to_string(),
             version: "0.2.144".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(
@@ -1237,10 +1322,6 @@ mod tests {
         })
         .into();
         let optional = RefCell::new(PackageNode {
-            id: PackageId {
-                repr: "optional 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)"
-                    .to_string(),
-            },
             name: "optional".to_string(),
             version: "1.0.0".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(
@@ -1262,12 +1343,6 @@ mod tests {
         .into();
 
         let input = PackageNode {
-            id: PackageId {
-                repr: format!(
-                    "parent 0.1.0 (path+file://{})",
-                    workspace.join("parent").display()
-                ),
-            },
             name: "parent".to_string(),
             version: "0.1.0".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(path.clone()).unwrap(),
@@ -1276,13 +1351,8 @@ mod tests {
             proc_macro: false,
             dependencies: vec![
                 DependencyNode {
+                    name: "child".to_string(),
                     package: RefCell::new(PackageNode {
-                        id: PackageId {
-                            repr: format!(
-                                "child 0.1.0 (path+file://{})",
-                                workspace.join("child").display()
-                            ),
-                        },
                         name: "child".to_string(),
                         version: "0.1.0".parse().unwrap(),
                         package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
@@ -1291,16 +1361,12 @@ mod tests {
                         proc_macro: false,
                         dependencies: vec![
                             DependencyNode {
+                                name: "fnv".to_string(),
                                 package: RefCell::new(PackageNode {
-                                    id: PackageId {
-                                        repr:
-                                            "fnv 1.0.7 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                .to_string()
-                                    },
                                     name: "fnv".to_string(),
                                     version: "1.0.7".parse().unwrap(),
                                     package_path: Utf8PathBuf::from_path_buf(
-                                        registry.join("src/github.com-1ecc6299db9ec823/fnv-1.0.7")
+                                        registry.join("src/github.com-1ecc6299db9ec823/fnv-1.0.7"),
                                     )
                                     .unwrap(),
                                     lib_path: Some("lib.rs".into()),
@@ -1321,16 +1387,12 @@ mod tests {
                                 features: Default::default(),
                             },
                             DependencyNode {
+                                name: "itoa".to_string(),
                                 package: RefCell::new(PackageNode {
-                                    id: PackageId {
-                                        repr:
-                                            "itoa 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                .to_string()
-                                    },
                                     name: "itoa".to_string(),
                                     version: "1.0.6".parse().unwrap(),
                                     package_path: Utf8PathBuf::from_path_buf(
-                                        registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
+                                        registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
                                     )
                                     .unwrap(),
                                     lib_path: Some("src/lib.rs".into()),
@@ -1340,7 +1402,7 @@ mod tests {
                                     build_dependencies: Default::default(),
                                     features: HashMap::from([(
                                         "no-panic".to_string(),
-                                        vec!["dep:no-panic".to_string()]
+                                        vec!["dep:no-panic".to_string()],
                                     )]),
                                     enabled_features: Default::default(),
                                     edition: "2018".to_string(),
@@ -1351,29 +1413,50 @@ mod tests {
                                 features: Default::default(),
                             },
                             DependencyNode {
+                                name: "libc".to_string(),
                                 package: Rc::clone(&libc),
                                 optional: false,
                                 uses_default_features: true,
                                 features: Default::default(),
                             },
                             DependencyNode {
+                                name: "optional".to_string(),
                                 package: Rc::clone(&optional),
                                 optional: true,
                                 uses_default_features: true,
                                 features: Default::default(),
                             },
                             DependencyNode {
+                                name: "new_name".to_string(),
                                 package: RefCell::new(PackageNode {
-                                    id: PackageId {
-                                        repr:
-                                            "rustversion 1.0.12 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                .to_string()
-                                    },
+                                    name: "rename".to_string(),
+                                    version: "0.1.0".parse().unwrap(),
+                                    package_path: Utf8PathBuf::from_path_buf(
+                                        workspace.join("rename"),
+                                    )
+                                    .unwrap(),
+                                    lib_path: Some("src/lib.rs".into()),
+                                    build_path: None,
+                                    proc_macro: false,
+                                    dependencies: Default::default(),
+                                    build_dependencies: Default::default(),
+                                    features: Default::default(),
+                                    enabled_features: Default::default(),
+                                    edition: "2021".to_string(),
+                                })
+                                .into(),
+                                optional: false,
+                                uses_default_features: true,
+                                features: Default::default(),
+                            },
+                            DependencyNode {
+                                name: "rustversion".to_string(),
+                                package: RefCell::new(PackageNode {
                                     name: "rustversion".to_string(),
                                     version: "1.0.12".parse().unwrap(),
-                                    package_path: Utf8PathBuf::from_path_buf(
-                                        registry.join("src/github.com-1ecc6299db9ec823/rustversion-1.0.12")
-                                    )
+                                    package_path: Utf8PathBuf::from_path_buf(registry.join(
+                                        "src/github.com-1ecc6299db9ec823/rustversion-1.0.12",
+                                    ))
                                     .unwrap(),
                                     lib_path: Some("src/lib.rs".into()),
                                     build_path: Some("build/build.rs".into()),
@@ -1390,47 +1473,49 @@ mod tests {
                                 features: Default::default(),
                             },
                         ],
-                        build_dependencies: vec![
-                            DependencyNode {
-                                package: RefCell::new(PackageNode {
-                                    id: PackageId {
-                                        repr:
-                                            "arbitrary 1.3.0 (registry+https://github.com/rust-lang/crates.io-index)"
-                                                .to_string()
-                                    },
-                                    name: "arbitrary".to_string(),
-                                    version: "1.3.0".parse().unwrap(),
-                                    package_path: Utf8PathBuf::from_path_buf(
-                                        registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0")
-                                    )
-                                    .unwrap(),
-                                    lib_path: Some("src/lib.rs".into()),
-                                    build_path: None,
-                                    proc_macro: false,
-                                    dependencies: Default::default(),
-                                    build_dependencies: Default::default(),
-                                    features: HashMap::from([
-                                        ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
-                                        ("derive_arbitrary".to_string(), vec!["dep:derive_arbitrary".to_string()]),
-                                    ]),
-                                    enabled_features: Default::default(),
-                                    edition: "2018".to_string(),
-                                })
-                                .into(),
-                                optional: false,
-                                uses_default_features: true,
-                                features: Default::default(),
-                            },
-                        ],
+                        build_dependencies: vec![DependencyNode {
+                            name: "arbitrary".to_string(),
+                            package: RefCell::new(PackageNode {
+                                name: "arbitrary".to_string(),
+                                version: "1.3.0".parse().unwrap(),
+                                package_path: Utf8PathBuf::from_path_buf(
+                                    registry
+                                        .join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0"),
+                                )
+                                .unwrap(),
+                                lib_path: Some("src/lib.rs".into()),
+                                build_path: None,
+                                proc_macro: false,
+                                dependencies: Default::default(),
+                                build_dependencies: Default::default(),
+                                features: HashMap::from([
+                                    ("derive".to_string(), vec!["derive_arbitrary".to_string()]),
+                                    (
+                                        "derive_arbitrary".to_string(),
+                                        vec!["dep:derive_arbitrary".to_string()],
+                                    ),
+                                ]),
+                                enabled_features: Default::default(),
+                                edition: "2018".to_string(),
+                            })
+                            .into(),
+                            optional: false,
+                            uses_default_features: true,
+                            features: Default::default(),
+                        }],
                         features: HashMap::from([
                             (
                                 "default".to_string(),
-                                vec!["one".to_string(), "two".to_string()]
+                                vec!["one".to_string(), "two".to_string()],
                             ),
-                            ("one".to_string(), vec![]),
+                            ("one".to_string(), vec!["new_name".to_string()]),
                             ("two".to_string(), vec![]),
+                            ("new_name".to_string(), vec!["dep:new_name".to_string()]),
                         ]),
-                        enabled_features: HashSet::from(["one".to_string()]),
+                        enabled_features: HashSet::from([
+                            "one".to_string(),
+                            "new_name".to_string(),
+                        ]),
                         edition: "2021".to_string(),
                     })
                     .into(),
@@ -1439,16 +1524,12 @@ mod tests {
                     features: vec!["one".to_string()],
                 },
                 DependencyNode {
+                    name: "itoa".to_string(),
                     package: RefCell::new(PackageNode {
-                        id: PackageId {
-                            repr:
-                                "itoa 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)"
-                                    .to_string()
-                        },
                         name: "itoa".to_string(),
                         version: "0.4.8".parse().unwrap(),
                         package_path: Utf8PathBuf::from_path_buf(
-                            registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8")
+                            registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8"),
                         )
                         .unwrap(),
                         lib_path: Some("src/lib.rs".into()),
@@ -1471,28 +1552,26 @@ mod tests {
                     features: Default::default(),
                 },
                 DependencyNode {
+                    name: "libc".to_string(),
                     package: libc,
                     optional: false,
                     uses_default_features: true,
                     features: Default::default(),
                 },
                 DependencyNode {
+                    name: "optional".to_string(),
                     package: optional,
                     optional: true,
                     uses_default_features: true,
                     features: Default::default(),
                 },
                 DependencyNode {
+                    name: "targets".to_string(),
                     package: RefCell::new(PackageNode {
-                        id: PackageId {
-                            repr: format!(
-                                "targets 0.1.0 (path+file://{})",
-                                workspace.join("targets").display()
-                            ),
-                        },
                         name: "targets".to_string(),
                         version: "0.1.0".parse().unwrap(),
-                        package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
+                        package_path: Utf8PathBuf::from_path_buf(workspace.join("targets"))
+                            .unwrap(),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -1544,7 +1623,7 @@ mod tests {
             build_path: None,
             proc_macro: false,
             dependencies: vec![
-                RefCell::new(Package {
+                Package {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
@@ -1552,7 +1631,7 @@ mod tests {
                     build_path: None,
                     proc_macro: false,
                     dependencies: vec![
-                        RefCell::new(Package {
+                        Package {
                             name: "fnv".to_string(),
                             version: "1.0.7".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(
@@ -1567,9 +1646,9 @@ mod tests {
                             features: Default::default(),
                             edition: "2015".to_string(),
                             printed: false,
-                        })
+                        }
                         .into(),
-                        RefCell::new(Package {
+                        Package {
                             name: "itoa".to_string(),
                             version: "1.0.6".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(
@@ -1584,10 +1663,31 @@ mod tests {
                             features: Default::default(),
                             edition: "2018".to_string(),
                             printed: false,
-                        })
+                        }
                         .into(),
-                        Rc::clone(&libc),
-                        RefCell::new(Package {
+                        Dependency {
+                            package: Rc::clone(&libc),
+                            rename: None,
+                        },
+                        Dependency {
+                            package: RefCell::new(Package {
+                                name: "rename".to_string(),
+                                version: "0.1.0".parse().unwrap(),
+                                package_path: Utf8PathBuf::from_path_buf(workspace.join("rename"))
+                                    .unwrap(),
+                                lib_path: None,
+                                build_path: None,
+                                proc_macro: false,
+                                dependencies: Default::default(),
+                                build_dependencies: Default::default(),
+                                features: Default::default(),
+                                edition: "2021".to_string(),
+                                printed: false,
+                            })
+                            .into(),
+                            rename: Some("new_name".to_string()),
+                        },
+                        Package {
                             name: "rustversion".to_string(),
                             version: "1.0.12".parse().unwrap(),
                             package_path: Utf8PathBuf::from_path_buf(
@@ -1602,10 +1702,10 @@ mod tests {
                             features: Default::default(),
                             edition: "2018".to_string(),
                             printed: false,
-                        })
+                        }
                         .into(),
                     ],
-                    build_dependencies: vec![RefCell::new(Package {
+                    build_dependencies: vec![Package {
                         name: "arbitrary".to_string(),
                         version: "1.3.0".parse().unwrap(),
                         package_path: Utf8PathBuf::from_path_buf(
@@ -1620,14 +1720,14 @@ mod tests {
                         features: Default::default(),
                         edition: "2018".to_string(),
                         printed: false,
-                    })
+                    }
                     .into()],
-                    features: vec!["one".to_string()],
+                    features: vec!["one".to_string(), "new_name".to_string()],
                     edition: "2021".to_string(),
                     printed: false,
-                })
+                }
                 .into(),
-                RefCell::new(Package {
+                Package {
                     name: "itoa".to_string(),
                     version: "0.4.8".parse().unwrap(),
                     package_path: Utf8PathBuf::from_path_buf(
@@ -1642,10 +1742,13 @@ mod tests {
                     features: Default::default(),
                     edition: "2018".to_string(),
                     printed: false,
-                })
+                }
                 .into(),
-                libc,
-                RefCell::new(Package {
+                Dependency {
+                    package: libc,
+                    rename: None,
+                },
+                Package {
                     name: "targets".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
@@ -1657,7 +1760,7 @@ mod tests {
                     features: vec!["unix".to_string()],
                     edition: "2021".to_string(),
                     printed: false,
-                })
+                }
                 .into(),
             ],
             build_dependencies: Default::default(),
@@ -1669,11 +1772,11 @@ mod tests {
         assert_eq!(actual, expected);
 
         // Make sure the libcs are linked - ie, the version for both libcs should change with this one assignment
-        actual.dependencies[2].borrow_mut().version = "0.2.0".parse().unwrap();
+        actual.dependencies[2].package.borrow_mut().version = "0.2.0".parse().unwrap();
 
         assert_eq!(
             actual.dependencies[2],
-            actual.dependencies[0].borrow().dependencies[2]
+            actual.dependencies[0].package.borrow().dependencies[2]
         );
     }
 
@@ -1689,9 +1792,6 @@ mod tests {
         };
 
         PackageNode {
-            id: PackageId {
-                repr: format!("{} 0.1.0 (path+file://{})", name, name),
-            },
             name: name.to_string(),
             version: "0.1.0".parse().unwrap(),
             package_path: Utf8PathBuf::from_path_buf(PathBuf::from_str(name).unwrap()).unwrap(),
@@ -1728,6 +1828,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: false,
@@ -1742,6 +1843,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: false,
@@ -1769,6 +1871,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -1785,6 +1888,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -1812,6 +1916,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -1828,6 +1933,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -1855,6 +1961,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: true,
                 uses_default_features: true,
@@ -1868,6 +1975,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: true,
                 uses_default_features: true,
@@ -1887,6 +1995,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: true,
                 uses_default_features: true,
@@ -1900,6 +2009,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: true,
                 uses_default_features: true,
@@ -1927,6 +2037,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -1943,6 +2054,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -1964,6 +2076,7 @@ mod tests {
                 ("optional", vec!["dep:optional"]),
             ],
             Some(DependencyNode {
+                name: "optional".to_string(),
                 package: RefCell::new(optional.clone()).into(),
                 optional: true,
                 uses_default_features: true,
@@ -1975,6 +2088,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -1995,10 +2109,60 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
+            }),
+        );
+
+        assert_eq!(input, expected);
+    }
+
+    // Renamed dependencies behind a feature should be enabled
+    #[test]
+    fn resolve_feature_renamed_dependency() {
+        let rename = make_package_node("rename", vec![], None);
+        let mut child = make_package_node(
+            "child",
+            vec![("new_name", vec!["dep:new_name"])],
+            Some(DependencyNode {
+                name: "new_name".to_string(),
+                package: RefCell::new(rename.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec![],
+            }),
+        );
+
+        let mut input = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                name: "child".to_string(),
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["new_name".to_string()],
+            }),
+        );
+
+        input.resolve();
+
+        child.dependencies[0].optional = false;
+        child.dependencies[0].package = RefCell::new(rename).into();
+        child.enabled_features.extend(["new_name".to_string()]);
+
+        let expected = make_package_node(
+            "parent",
+            vec![],
+            Some(DependencyNode {
+                name: "child".to_string(),
+                package: RefCell::new(child.clone()).into(),
+                optional: false,
+                uses_default_features: true,
+                features: vec!["new_name".to_string()],
             }),
         );
 
@@ -2016,6 +2180,7 @@ mod tests {
                 ("optional", vec!["dep:optional"]),
             ],
             Some(DependencyNode {
+                name: "optional".to_string(),
                 package: RefCell::new(optional.clone()).into(),
                 optional: true,
                 uses_default_features: true,
@@ -2027,6 +2192,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2052,6 +2218,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2077,6 +2244,7 @@ mod tests {
                 ("optional", vec!["dep:optional"]),
             ],
             Some(DependencyNode {
+                name: "optional".to_string(),
                 package: RefCell::new(optional.clone()).into(),
                 optional: true,
                 uses_default_features: true,
@@ -2088,6 +2256,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2112,6 +2281,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2137,6 +2307,7 @@ mod tests {
                 ("optional", vec!["dep:optional"]),
             ],
             Some(DependencyNode {
+                name: "optional".to_string(),
                 package: RefCell::new(optional.clone()).into(),
                 optional: true,
                 uses_default_features: false,
@@ -2148,6 +2319,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2167,6 +2339,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2192,6 +2365,7 @@ mod tests {
                 ("hi", vec!["optional?/enabled"]),
             ],
             Some(DependencyNode {
+                name: "optional".to_string(),
                 package: RefCell::new(optional.clone()).into(),
                 optional: true,
                 uses_default_features: false,
@@ -2203,6 +2377,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2228,6 +2403,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2267,6 +2443,7 @@ mod tests {
             "layer1_1",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: Rc::clone(&child_rc),
                 optional: false,
                 uses_default_features: true,
@@ -2278,6 +2455,7 @@ mod tests {
             "layer1_2",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: Rc::clone(&child_rc),
                 optional: false,
                 uses_default_features: false,
@@ -2289,6 +2467,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "layer1_1".to_string(),
                 package: RefCell::new(layer1_1.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2296,6 +2475,7 @@ mod tests {
             }),
         );
         input.dependencies.push(DependencyNode {
+            name: "layer1_2".to_string(),
             package: RefCell::new(layer1_2).into(),
             optional: false,
             uses_default_features: true,
@@ -2314,6 +2494,7 @@ mod tests {
             "layer1_1",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: Rc::clone(&child_rc),
                 optional: false,
                 uses_default_features: true,
@@ -2325,6 +2506,7 @@ mod tests {
             "layer1_2",
             vec![],
             Some(DependencyNode {
+                name: "child".to_string(),
                 package: Rc::clone(&child_rc),
                 optional: false,
                 uses_default_features: false,
@@ -2336,6 +2518,7 @@ mod tests {
             "parent",
             vec![],
             Some(DependencyNode {
+                name: "layer1_1".to_string(),
                 package: RefCell::new(layer1_1.clone()).into(),
                 optional: false,
                 uses_default_features: true,
@@ -2343,6 +2526,7 @@ mod tests {
             }),
         );
         expected.dependencies.push(DependencyNode {
+            name: "layer1_2".to_string(),
             package: RefCell::new(layer1_2).into(),
             optional: false,
             uses_default_features: true,

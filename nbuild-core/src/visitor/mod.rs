@@ -12,7 +12,8 @@ pub trait Visitor {
         for dependency in package.dependencies.iter() {
             let dependency_span = info_span!(
                 "processing dependency",
-                name = dependency.package.borrow().name
+                name = dependency.name,
+                package_name = dependency.package.borrow().name
             );
             let _dependency_span_guard = dependency_span.enter();
 
@@ -50,7 +51,7 @@ pub struct EnableFeaturesVisitor;
 
 impl Visitor for EnableFeaturesVisitor {
     fn visit_dependency(&mut self, dependency: &DependencyNode) {
-        if !dependency.optional {
+        if !dependency.optional && !dependency.features.is_empty() {
             let features: Vec<String> = dependency
                 .features
                 .clone()
@@ -103,7 +104,7 @@ impl Visitor for UnpackChainVisitor {
                         if let Some(dependency) = package
                             .dependencies
                             .iter_mut()
-                            .find(|d| d.package.borrow().name == dependency_name)
+                            .find(|d| d.name == dependency_name)
                         {
                             trace!(name = dependency_name, "activating optional dependency");
                             dependency.optional = false;
@@ -137,7 +138,7 @@ impl Visitor for UnpackChainVisitor {
                             if let Some(dependency) = package
                                 .dependencies
                                 .iter_mut()
-                                .find(|d| d.package.borrow().name == dependency_name)
+                                .find(|d| d.name == dependency_name)
                             {
                                 let feature = feature.to_string();
 
@@ -187,7 +188,7 @@ impl Visitor for OptionalDependencyFeaturesVisitor {
             if let Some(dependency) = package
                 .dependencies
                 .iter_mut()
-                .find(|d| d.package.borrow().name == dependency_name && !d.optional)
+                .find(|d| d.name == dependency_name && !d.optional)
             {
                 if !dependency.features.contains(&feature) {
                     dependency.features.push(feature.clone());

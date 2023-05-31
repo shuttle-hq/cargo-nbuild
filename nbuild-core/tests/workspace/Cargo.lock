@@ -9,6 +9,7 @@ dependencies = [
  "fnv",
  "itoa 1.0.6",
  "libc",
+ "rename",
  "rustversion",
 ]
 
@@ -45,6 +46,10 @@ dependencies = [
  "libc",
  "targets",
 ]
+
+[[package]]
+name = "rename"
+version = "0.1.0"
 
 [[package]]
 name = "rustversion"

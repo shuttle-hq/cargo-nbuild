@@ -23,8 +23,9 @@ let
     version = "0.1.0";
 
     src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/child;
-    dependencies = [fnv_1_0_7 itoa_1_0_6 libc_0_2_144 rustversion_1_0_12];
+    dependencies = [fnv_1_0_7 itoa_1_0_6 libc_0_2_144 rename_0_1_0 rustversion_1_0_12];
     buildDependencies = [arbitrary_1_3_0];
+    crateRenames = {"rename" = "new_name";};
     features = ["one"];
     edition = "2021";
   };
@@ -49,6 +50,13 @@ let
 
     src = /home/chesedo/.cargo/registry/src/github.com-1ecc6299db9ec823/libc-0.2.144;
     edition = "2015";
+  };
+  rename_0_1_0 = pkgs.buildRustCrate rec {
+    crateName = "rename";
+    version = "0.1.0";
+
+    src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/rename;
+    edition = "2021";
   };
   rustversion_1_0_12 = pkgs.buildRustCrate rec {
     crateName = "rustversion";

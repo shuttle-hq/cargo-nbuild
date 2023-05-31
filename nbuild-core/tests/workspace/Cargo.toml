@@ -3,5 +3,6 @@
 members = [
     "child",
     "parent",
+    "rename",
     "targets",
 ]
