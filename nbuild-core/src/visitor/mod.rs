@@ -113,8 +113,20 @@ impl Visitor for UnpackChainVisitor {
                                 if let Some(default_features) =
                                     dependency_package.features.get("default").cloned()
                                 {
+                                    trace!(?default_features, "add default features");
+
                                     dependency_package.enabled_features.extend(default_features);
                                 }
+                            }
+
+                            if !dependency.features.is_empty() {
+                                trace!(features = ?dependency.features, "add dependency features");
+
+                                dependency
+                                    .package
+                                    .borrow_mut()
+                                    .enabled_features
+                                    .extend(dependency.features.iter().cloned());
                             }
                         }
 

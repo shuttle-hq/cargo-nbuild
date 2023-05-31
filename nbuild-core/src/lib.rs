@@ -1958,7 +1958,7 @@ mod tests {
     // Dependencies behind a feature should be enabled
     #[test]
     fn resolve_feature_dependency() {
-        let optional = make_package_node("optional", vec![], None);
+        let mut optional = make_package_node("optional", vec![("feature", vec![])], None);
         let mut child = make_package_node(
             "child",
             vec![
@@ -1969,7 +1969,7 @@ mod tests {
                 package: RefCell::new(optional.clone()).into(),
                 optional: true,
                 uses_default_features: true,
-                features: vec![],
+                features: vec!["feature".to_string()],
             }),
         );
 
@@ -1987,10 +1987,11 @@ mod tests {
         input.resolve();
 
         child.dependencies[0].optional = false;
+        optional.enabled_features.extend(["feature".to_string()]);
+        child.dependencies[0].package = RefCell::new(optional).into();
         child
             .enabled_features
             .extend(["one".to_string(), "optional".to_string()]);
-        child.dependencies[0].package = RefCell::new(optional).into();
 
         let expected = make_package_node(
             "parent",
