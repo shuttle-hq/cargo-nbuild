@@ -280,7 +280,6 @@ impl PackageNode {
         )
     }
 
-    #[instrument(skip_all, fields(id))]
     fn get_package(
         id: PackageId,
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
@@ -291,7 +290,12 @@ impl PackageNode {
         let node = nodes.get(&id).unwrap().clone();
         let package = packages.get(&id).unwrap();
 
-        trace!(?package, ?node, "found package and node");
+        trace!(
+            package.name,
+            ?package.features,
+            ?node,
+            "found package and node"
+        );
 
         let features = package.features.clone();
         let package_dependencies = package

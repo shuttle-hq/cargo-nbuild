@@ -1,3 +1,5 @@
+use tracing::{info_span, trace};
+
 use crate::{DependencyNode, PackageNode};
 
 pub trait Visitor {
@@ -8,6 +10,12 @@ pub trait Visitor {
         self.visit_package(package);
 
         for dependency in package.dependencies.iter() {
+            let dependency_span = info_span!(
+                "processing dependency",
+                name = dependency.package.borrow().name
+            );
+            let _dependency_span_guard = dependency_span.enter();
+
             self.visit_dependency(dependency);
 
             dependency.package.borrow_mut().visit(self);
@@ -27,6 +35,8 @@ impl Visitor for SetDefaultVisitor {
             && dependency.uses_default_features
             && dependency.package.borrow().features.contains_key("default")
         {
+            trace!("enabling default feature");
+
             dependency
                 .package
                 .borrow_mut()
@@ -49,6 +59,8 @@ impl Visitor for EnableFeaturesVisitor {
                 .cloned()
                 .collect();
 
+            trace!(?features, "enabling features");
+
             dependency
                 .package
                 .borrow_mut()
@@ -66,6 +78,8 @@ impl Visitor for UnpackDefaultVisitor {
 
         if has_default {
             if let Some(default_features) = package.features.get("default") {
+                trace!(?default_features, "enabling default features");
+
                 package.enabled_features.extend(default_features.clone());
             }
         }
@@ -90,6 +104,7 @@ impl Visitor for UnpackChainVisitor {
                             .iter_mut()
                             .find(|d| d.package.borrow().name == dependency_name)
                         {
+                            trace!(name = dependency_name, "activating optional dependency");
                             dependency.optional = false;
 
                             if dependency.uses_default_features {
@@ -134,6 +149,8 @@ impl Visitor for UnpackChainVisitor {
                 .collect();
 
             if !new_features.is_empty() {
+                trace!(?new_features, "adding new features");
+
                 package.enabled_features.extend(new_features);
             } else {
                 break;
@@ -162,6 +179,12 @@ impl Visitor for OptionalDependencyFeaturesVisitor {
                 if !dependency.features.contains(&feature) {
                     dependency.features.push(feature.clone());
                 }
+
+                trace!(
+                    dependency = dependency_name,
+                    feature,
+                    "adding feature on optional dependency"
+                );
 
                 dependency
                     .package
