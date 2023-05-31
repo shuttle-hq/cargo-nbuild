@@ -97,6 +97,7 @@ impl Visitor for UnpackChainVisitor {
                 .filter_map(|f| package.features.get(f))
                 .flatten()
                 .cloned()
+                .filter(|f| !package.enabled_features.contains(f))
                 .filter_map(|f| {
                     if let Some(dependency_name) = f.strip_prefix("dep:") {
                         if let Some(dependency) = package
