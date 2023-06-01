@@ -1,4 +1,8 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> {
+  overlays = [
+    (import (builtins.fetchTarball https://github.com/mozilla/nixpkgs-mozilla/archive/master.tar.gz))
+  ];
+} }:
 
 let
   sourceFilter = name: type:
@@ -20,6 +24,13 @@ let
           type == "symlink" && pkgs.lib.hasPrefix "result" baseName
         )
       );
+  rustc = ((pkgs.rustChannelOf{ channel = "1.68.0"; }).rust.override {
+    extensions = ["rust-src"];
+  });
+  buildRustCrate = pkgs.buildRustCrate.override {
+    inherit rustc;
+  };
+  preBuild = "rustc -vV";
   fetchcrate = { crateName, version, sha256 }: pkgs.fetchurl {
     # https://www.pietroalbini.org/blog/downloading-crates-io/
     # Not rate-limited, CDN URL.
@@ -29,7 +40,7 @@ let
   };
 
   # Core
-  parent = pkgs.buildRustCrate rec {
+  parent = buildRustCrate rec {
     crateName = "parent";
     version = "0.1.0";
 
@@ -42,10 +53,11 @@ let
       targets_0_1_0
     ];
     edition = "2021";
-  } ;
+    inherit preBuild;
+  };
 
   # Dependencies
-  child_0_1_0 = pkgs.buildRustCrate rec {
+  child_0_1_0 = buildRustCrate rec {
     crateName = "child";
     version = "0.1.0";
 
@@ -55,8 +67,9 @@ let
     crateRenames = {"rename" = "new_name";};
     features = ["one"];
     edition = "2021";
+    inherit preBuild;
   };
-  fnv_1_0_7 = pkgs.buildRustCrate rec {
+  fnv_1_0_7 = buildRustCrate rec {
     crateName = "fnv";
     version = "1.0.7";
 
@@ -64,31 +77,35 @@ let
     src = (fetchcrate { inherit crateName version sha256; });
     libPath = "lib.rs";
     edition = "2015";
+    inherit preBuild;
   };
-  itoa_1_0_6 = pkgs.buildRustCrate rec {
+  itoa_1_0_6 = buildRustCrate rec {
     crateName = "itoa";
     version = "1.0.6";
 
     sha256 = "sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
+    inherit preBuild;
   };
-  libc_0_2_144 = pkgs.buildRustCrate rec {
+  libc_0_2_144 = buildRustCrate rec {
     crateName = "libc";
     version = "0.2.144";
 
     sha256 = "sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2015";
+    inherit preBuild;
   };
-  rename_0_1_0 = pkgs.buildRustCrate rec {
+  rename_0_1_0 = buildRustCrate rec {
     crateName = "rename";
     version = "0.1.0";
 
     src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/rename; };
     edition = "2021";
+    inherit preBuild;
   };
-  rustversion_1_0_12 = pkgs.buildRustCrate rec {
+  rustversion_1_0_12 = buildRustCrate rec {
     crateName = "rustversion";
     version = "1.0.12";
 
@@ -97,30 +114,34 @@ let
     build = "build/build.rs";
     procMacro = true;
     edition = "2018";
+    inherit preBuild;
   };
-  arbitrary_1_3_0 = pkgs.buildRustCrate rec {
+  arbitrary_1_3_0 = buildRustCrate rec {
     crateName = "arbitrary";
     version = "1.3.0";
 
     sha256 = "sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
+    inherit preBuild;
   };
-  itoa_0_4_8 = pkgs.buildRustCrate rec {
+  itoa_0_4_8 = buildRustCrate rec {
     crateName = "itoa";
     version = "0.4.8";
 
     sha256 = "sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
+    inherit preBuild;
   };
-  targets_0_1_0 = pkgs.buildRustCrate rec {
+  targets_0_1_0 = buildRustCrate rec {
     crateName = "targets";
     version = "0.1.0";
 
     src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/targets; };
     features = ["unix"];
     edition = "2021";
+    inherit preBuild;
   };
 in
 parent

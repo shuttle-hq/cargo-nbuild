@@ -22,3 +22,13 @@ pub fn lib_path() -> FnvHashMap<u32, &'static str> {
 
     map
 }
+
+#[rustversion::before(1.68)]
+pub fn version() -> &'static str {
+    "< 1.68.0"
+}
+
+#[rustversion::since(1.68)]
+pub fn version() -> &'static str {
+    ">= 1.68.0"
+}

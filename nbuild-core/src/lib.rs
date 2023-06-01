@@ -80,7 +80,11 @@ impl Package {
         };
 
         format!(
-            r#"{{ pkgs ? import <nixpkgs> {{}} }}:
+            r#"{{ pkgs ? import <nixpkgs> {{
+  overlays = [
+    (import (builtins.fetchTarball https://github.com/mozilla/nixpkgs-mozilla/archive/master.tar.gz))
+  ];
+}} }}:
 
 let
   sourceFilter = name: type:
@@ -102,6 +106,13 @@ let
           type == "symlink" && pkgs.lib.hasPrefix "result" baseName
         )
       );
+  rustc = ((pkgs.rustChannelOf{{ channel = "1.68.0"; }}).rust.override {{
+    extensions = ["rust-src"];
+  }});
+  buildRustCrate = pkgs.buildRustCrate.override {{
+    inherit rustc;
+  }};
+  preBuild = "rustc -vV";
   fetchcrate = {{ crateName, version, sha256 }}: pkgs.fetchurl {{
     # https://www.pietroalbini.org/blog/downloading-crates-io/
     # Not rate-limited, CDN URL.
@@ -111,7 +122,7 @@ let
   }};
 
   # Core
-  {} = pkgs.buildRustCrate rec {{
+  {} = buildRustCrate rec {{
     crateName = "{}";
     version = "{}";
 
@@ -121,7 +132,8 @@ let
       {}
     ];{}
     edition = "{}";
-  }} ;
+    inherit preBuild;
+  }};
 
   # Dependencies
 {}
@@ -224,12 +236,13 @@ in
         };
 
         let details = format!(
-            r#"  {} = pkgs.buildRustCrate rec {{
+            r#"  {} = buildRustCrate rec {{
     crateName = "{}";
     version = "{}";
 
     {}{}{}{}{}{}{}{}
     edition = "{}";
+    inherit preBuild;
   }};"#,
             this.identifier(),
             this.name,

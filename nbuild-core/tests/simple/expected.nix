@@ -1,4 +1,8 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> {
+  overlays = [
+    (import (builtins.fetchTarball https://github.com/mozilla/nixpkgs-mozilla/archive/master.tar.gz))
+  ];
+} }:
 
 let
   sourceFilter = name: type:
@@ -20,6 +24,13 @@ let
           type == "symlink" && pkgs.lib.hasPrefix "result" baseName
         )
       );
+  rustc = ((pkgs.rustChannelOf{ channel = "1.68.0"; }).rust.override {
+    extensions = ["rust-src"];
+  });
+  buildRustCrate = pkgs.buildRustCrate.override {
+    inherit rustc;
+  };
+  preBuild = "rustc -vV";
   fetchcrate = { crateName, version, sha256 }: pkgs.fetchurl {
     # https://www.pietroalbini.org/blog/downloading-crates-io/
     # Not rate-limited, CDN URL.
@@ -29,7 +40,7 @@ let
   };
 
   # Core
-  simple = pkgs.buildRustCrate rec {
+  simple = buildRustCrate rec {
     crateName = "simple";
     version = "0.1.0";
 
@@ -40,24 +51,27 @@ let
     ];
     buildDependencies = [arbitrary_1_3_0];
     edition = "2021";
-  } ;
+    inherit preBuild;
+  };
 
   # Dependencies
-  itoa_1_0_6 = pkgs.buildRustCrate rec {
+  itoa_1_0_6 = buildRustCrate rec {
     crateName = "itoa";
     version = "1.0.6";
 
     sha256 = "itoa_sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
+    inherit preBuild;
   };
-  arbitrary_1_3_0 = pkgs.buildRustCrate rec {
+  arbitrary_1_3_0 = buildRustCrate rec {
     crateName = "arbitrary";
     version = "1.3.0";
 
     sha256 = "arbitrary_sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
+    inherit preBuild;
   };
 in
 simple
