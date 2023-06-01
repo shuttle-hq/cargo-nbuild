@@ -27,8 +27,11 @@ let
   rustc = ((pkgs.rustChannelOf{ channel = "1.68.0"; }).rust.override {
     extensions = ["rust-src"];
   });
+  defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+    opentelemetry-proto = attrs: { buildInputs = [ pkgs.protobuf ]; };
+  };
   buildRustCrate = pkgs.buildRustCrate.override {
-    inherit rustc;
+    inherit rustc defaultCrateOverrides;
   };
   preBuild = "rustc -vV";
   fetchcrate = { crateName, version, sha256 }: pkgs.fetchurl {
@@ -67,6 +70,7 @@ let
     crateRenames = {"rename" = "new_name";};
     features = ["one"];
     edition = "2021";
+    crateBin = [];
     inherit preBuild;
   };
   fnv_1_0_7 = buildRustCrate rec {
@@ -77,6 +81,7 @@ let
     src = (fetchcrate { inherit crateName version sha256; });
     libPath = "lib.rs";
     edition = "2015";
+    crateBin = [];
     inherit preBuild;
   };
   itoa_1_0_6 = buildRustCrate rec {
@@ -86,6 +91,7 @@ let
     sha256 = "sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
+    crateBin = [];
     inherit preBuild;
   };
   libc_0_2_144 = buildRustCrate rec {
@@ -95,6 +101,7 @@ let
     sha256 = "sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2015";
+    crateBin = [];
     inherit preBuild;
   };
   rename_0_1_0 = buildRustCrate rec {
@@ -103,6 +110,7 @@ let
 
     src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/rename; };
     edition = "2021";
+    crateBin = [];
     inherit preBuild;
   };
   rustversion_1_0_12 = buildRustCrate rec {
@@ -114,6 +122,7 @@ let
     build = "build/build.rs";
     procMacro = true;
     edition = "2018";
+    crateBin = [];
     inherit preBuild;
   };
   arbitrary_1_3_0 = buildRustCrate rec {
@@ -123,6 +132,7 @@ let
     sha256 = "sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
+    crateBin = [];
     inherit preBuild;
   };
   itoa_0_4_8 = buildRustCrate rec {
@@ -132,6 +142,7 @@ let
     sha256 = "sha";
     src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
+    crateBin = [];
     inherit preBuild;
   };
   targets_0_1_0 = buildRustCrate rec {
@@ -141,6 +152,7 @@ let
     src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/targets; };
     features = ["unix"];
     edition = "2021";
+    crateBin = [];
     inherit preBuild;
   };
 in

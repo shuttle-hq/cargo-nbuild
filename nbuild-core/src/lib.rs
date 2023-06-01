@@ -109,8 +109,11 @@ let
   rustc = ((pkgs.rustChannelOf{{ channel = "1.68.0"; }}).rust.override {{
     extensions = ["rust-src"];
   }});
+  defaultCrateOverrides = pkgs.defaultCrateOverrides // {{
+    opentelemetry-proto = attrs: {{ buildInputs = [ pkgs.protobuf ]; }};
+  }};
   buildRustCrate = pkgs.buildRustCrate.override {{
-    inherit rustc;
+    inherit rustc defaultCrateOverrides;
   }};
   preBuild = "rustc -vV";
   fetchcrate = {{ crateName, version, sha256 }}: pkgs.fetchurl {{
@@ -242,6 +245,7 @@ in
 
     {}{}{}{}{}{}{}{}
     edition = "{}";
+    crateBin = [];
     inherit preBuild;
   }};"#,
             this.identifier(),
