@@ -9,7 +9,7 @@ pub trait Visitor {
     {
         self.visit_package(package);
 
-        for dependency in package.dependencies.iter() {
+        for dependency in package.dependencies_iter() {
             let dependency_span = info_span!(
                 "processing dependency",
                 name = dependency.name,
@@ -104,6 +104,7 @@ impl Visitor for UnpackChainVisitor {
                         if let Some(dependency) = package
                             .dependencies
                             .iter_mut()
+                            .chain(package.build_dependencies.iter_mut())
                             .find(|d| d.name == dependency_name)
                         {
                             trace!(name = dependency_name, "activating optional dependency");
@@ -138,6 +139,7 @@ impl Visitor for UnpackChainVisitor {
                             if let Some(dependency) = package
                                 .dependencies
                                 .iter_mut()
+                                .chain(package.build_dependencies.iter_mut())
                                 .find(|d| d.name == dependency_name)
                             {
                                 let feature = feature.to_string();
@@ -186,8 +188,7 @@ impl Visitor for OptionalDependencyFeaturesVisitor {
 
         for (dependency_name, feature) in new_dependencies_features {
             if let Some(dependency) = package
-                .dependencies
-                .iter_mut()
+                .dependencies_iter_mut()
                 .find(|d| d.name == dependency_name && !d.optional)
             {
                 if !dependency.features.contains(&feature) {

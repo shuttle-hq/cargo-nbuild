@@ -219,12 +219,12 @@ in
 
         build_details.push(details);
 
-        for dependency in this.dependencies.iter() {
+        for dependency in this
+            .dependencies
+            .iter()
+            .chain(this.build_dependencies.iter())
+        {
             Self::to_details(dependency, build_details);
-        }
-
-        for build_dependency in this.build_dependencies.iter() {
-            Self::to_details(build_dependency, build_details);
         }
 
         this.printed = true;
@@ -531,6 +531,18 @@ impl PackageNode {
     fn visit(&mut self, visitor: &mut impl Visitor) {
         visitor.visit(self);
     }
+
+    pub fn dependencies_iter(&self) -> impl Iterator<Item = &DependencyNode> {
+        self.dependencies
+            .iter()
+            .chain(self.build_dependencies.iter())
+    }
+
+    pub fn dependencies_iter_mut(&mut self) -> impl Iterator<Item = &mut DependencyNode> {
+        self.dependencies
+            .iter_mut()
+            .chain(self.build_dependencies.iter_mut())
+    }
 }
 
 impl DependencyNode {
@@ -634,7 +646,7 @@ impl DependencyNode {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, str::FromStr};
+    use std::{fs, panic::catch_unwind, path::PathBuf, str::FromStr};
 
     use super::*;
 
@@ -1956,6 +1968,7 @@ mod tests {
             ],
             None,
         );
+        let build = make_package_node("build", vec![("default", vec!["hi"]), ("hi", vec![])], None);
 
         let mut input = make_package_node(
             "parent",
@@ -1968,20 +1981,34 @@ mod tests {
                 features: vec![],
             }),
         );
+        input.build_dependencies.push(DependencyNode {
+            name: "build".to_string(),
+            package: RefCell::new(build.clone()).into(),
+            optional: true,
+            uses_default_features: true,
+            features: vec![],
+        });
 
         input.resolve();
 
-        let expected = make_package_node(
+        let mut expected = make_package_node(
             "parent",
             vec![],
             Some(DependencyNode {
                 name: "child".to_string(),
-                package: RefCell::new(child.clone()).into(),
+                package: RefCell::new(child).into(),
                 optional: true,
                 uses_default_features: true,
                 features: vec![],
             }),
         );
+        expected.build_dependencies.push(DependencyNode {
+            name: "build".to_string(),
+            package: RefCell::new(build.clone()).into(),
+            optional: true,
+            uses_default_features: true,
+            features: vec![],
+        });
 
         assert_eq!(input, expected);
     }
@@ -1990,6 +2017,7 @@ mod tests {
     #[test]
     fn resolve_optional_features() {
         let child = make_package_node("child", vec![("one", vec![]), ("two", vec![])], None);
+        let build = make_package_node("build", vec![("hi", vec![])], None);
 
         let mut input = make_package_node(
             "parent",
@@ -2002,10 +2030,17 @@ mod tests {
                 features: vec!["one".to_string()],
             }),
         );
+        input.build_dependencies.push(DependencyNode {
+            name: "build".to_string(),
+            package: RefCell::new(build.clone()).into(),
+            optional: true,
+            uses_default_features: true,
+            features: vec!["hi".to_string()],
+        });
 
         input.resolve();
 
-        let expected = make_package_node(
+        let mut expected = make_package_node(
             "parent",
             vec![],
             Some(DependencyNode {
@@ -2016,6 +2051,13 @@ mod tests {
                 features: vec!["one".to_string()],
             }),
         );
+        expected.build_dependencies.push(DependencyNode {
+            name: "build".to_string(),
+            package: RefCell::new(build.clone()).into(),
+            optional: true,
+            uses_default_features: true,
+            features: vec!["hi".to_string()],
+        });
 
         assert_eq!(input, expected);
     }
@@ -2032,6 +2074,11 @@ mod tests {
             ],
             None,
         );
+        let mut build = make_package_node(
+            "build",
+            vec![("hi", vec!["world"]), ("world", vec![])],
+            None,
+        );
 
         let mut input = make_package_node(
             "parent",
@@ -2044,13 +2091,24 @@ mod tests {
                 features: vec!["one".to_string()],
             }),
         );
+        input.build_dependencies.push(DependencyNode {
+            name: "build".to_string(),
+            package: RefCell::new(build.clone()).into(),
+            optional: false,
+            uses_default_features: true,
+            features: vec!["hi".to_string()],
+        });
 
         input.resolve();
 
         child
             .enabled_features
             .extend(["one".to_string(), "two".to_string(), "three".to_string()]);
-        let expected = make_package_node(
+        build
+            .enabled_features
+            .extend(["hi".to_string(), "world".to_string()]);
+
+        let mut expected = make_package_node(
             "parent",
             vec![],
             Some(DependencyNode {
@@ -2061,6 +2119,13 @@ mod tests {
                 features: vec!["one".to_string()],
             }),
         );
+        expected.build_dependencies.push(DependencyNode {
+            name: "build".to_string(),
+            package: RefCell::new(build.clone()).into(),
+            optional: false,
+            uses_default_features: true,
+            features: vec!["hi".to_string()],
+        });
 
         assert_eq!(input, expected);
     }
@@ -2069,6 +2134,9 @@ mod tests {
     #[test]
     fn resolve_feature_dependency() {
         let mut optional = make_package_node("optional", vec![("feature", vec![])], None);
+        let mut optional_build =
+            make_package_node("optional", vec![("build_feature", vec![])], None);
+
         let mut child = make_package_node(
             "child",
             vec![
@@ -2083,6 +2151,17 @@ mod tests {
                 features: vec!["feature".to_string()],
             }),
         );
+        let mut build = make_package_node(
+            "build",
+            vec![("hi", vec!["dep:optional"])],
+            Some(DependencyNode {
+                name: "optional".to_string(),
+                package: RefCell::new(optional_build.clone()).into(),
+                optional: true,
+                uses_default_features: true,
+                features: vec!["build_feature".to_string()],
+            }),
+        );
 
         let mut input = make_package_node(
             "parent",
@@ -2095,17 +2174,32 @@ mod tests {
                 features: vec!["one".to_string()],
             }),
         );
+        input.build_dependencies.push(DependencyNode {
+            name: "build".to_string(),
+            package: RefCell::new(build.clone()).into(),
+            optional: false,
+            uses_default_features: true,
+            features: vec!["hi".to_string()],
+        });
 
         input.resolve();
 
-        child.dependencies[0].optional = false;
         optional.enabled_features.extend(["feature".to_string()]);
+        optional_build
+            .enabled_features
+            .extend(["build_feature".to_string()]);
+
+        child.dependencies[0].optional = false;
         child.dependencies[0].package = RefCell::new(optional).into();
         child
             .enabled_features
             .extend(["one".to_string(), "optional".to_string()]);
 
-        let expected = make_package_node(
+        build.dependencies[0].optional = false;
+        build.dependencies[0].package = RefCell::new(optional_build).into();
+        build.enabled_features.extend(["hi".to_string()]);
+
+        let mut expected = make_package_node(
             "parent",
             vec![],
             Some(DependencyNode {
@@ -2116,6 +2210,13 @@ mod tests {
                 features: vec!["one".to_string()],
             }),
         );
+        expected.build_dependencies.push(DependencyNode {
+            name: "build".to_string(),
+            package: RefCell::new(build.clone()).into(),
+            optional: false,
+            uses_default_features: true,
+            features: vec!["hi".to_string()],
+        });
 
         assert_eq!(input, expected);
     }
@@ -2124,9 +2225,13 @@ mod tests {
     #[test]
     fn resolve_feature_renamed_dependency() {
         let rename = make_package_node("rename", vec![], None);
+        let build_rename = make_package_node("build_rename", vec![], None);
         let mut child = make_package_node(
             "child",
-            vec![("new_name", vec!["dep:new_name"])],
+            vec![
+                ("new_name", vec!["dep:new_name"]),
+                ("new_build_name", vec!["dep:new_build_name"]),
+            ],
             Some(DependencyNode {
                 name: "new_name".to_string(),
                 package: RefCell::new(rename.clone()).into(),
@@ -2135,6 +2240,13 @@ mod tests {
                 features: vec![],
             }),
         );
+        child.build_dependencies.push(DependencyNode {
+            name: "new_build_name".to_string(),
+            package: RefCell::new(build_rename.clone()).into(),
+            optional: true,
+            uses_default_features: true,
+            features: vec![],
+        });
 
         let mut input = make_package_node(
             "parent",
@@ -2144,7 +2256,7 @@ mod tests {
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
-                features: vec!["new_name".to_string()],
+                features: vec!["new_name".to_string(), "new_build_name".to_string()],
             }),
         );
 
@@ -2152,7 +2264,11 @@ mod tests {
 
         child.dependencies[0].optional = false;
         child.dependencies[0].package = RefCell::new(rename).into();
-        child.enabled_features.extend(["new_name".to_string()]);
+        child.build_dependencies[0].optional = false;
+        child.build_dependencies[0].package = RefCell::new(build_rename).into();
+        child
+            .enabled_features
+            .extend(["new_name".to_string(), "new_build_name".to_string()]);
 
         let expected = make_package_node(
             "parent",
@@ -2162,7 +2278,7 @@ mod tests {
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
-                features: vec!["new_name".to_string()],
+                features: vec!["new_name".to_string(), "new_build_name".to_string()],
             }),
         );
 
@@ -2173,11 +2289,17 @@ mod tests {
     #[test]
     fn resolve_feature_dependency_features() {
         let optional = make_package_node("optional", vec![("feature", vec![])], None);
+        let build_optional =
+            make_package_node("build_optional", vec![("build_feature", vec![])], None);
         let mut child = make_package_node(
             "child",
             vec![
-                ("one", vec!["optional/feature"]),
+                (
+                    "one",
+                    vec!["optional/feature", "build_optional/build_feature"],
+                ),
                 ("optional", vec!["dep:optional"]),
+                ("build_optional", vec!["dep:build_optional"]),
             ],
             Some(DependencyNode {
                 name: "optional".to_string(),
@@ -2187,6 +2309,13 @@ mod tests {
                 features: vec![],
             }),
         );
+        child.build_dependencies.push(DependencyNode {
+            name: "build_optional".to_string(),
+            package: RefCell::new(build_optional.clone()).into(),
+            optional: true,
+            uses_default_features: true,
+            features: vec![],
+        });
 
         let mut input = make_package_node(
             "parent",
@@ -2210,9 +2339,21 @@ mod tests {
             .borrow_mut()
             .enabled_features
             .extend(["feature".to_string()]);
-        child
+        child.build_dependencies[0].optional = false;
+        child.build_dependencies[0]
+            .features
+            .push("build_feature".to_string());
+        child.build_dependencies[0].package = RefCell::new(build_optional).into();
+        child.build_dependencies[0]
+            .package
+            .borrow_mut()
             .enabled_features
-            .extend(["one".to_string(), "optional".to_string()]);
+            .extend(["build_feature".to_string()]);
+        child.enabled_features.extend([
+            "one".to_string(),
+            "optional".to_string(),
+            "build_optional".to_string(),
+        ]);
 
         let expected = make_package_node(
             "parent",
@@ -2229,7 +2370,7 @@ mod tests {
         assert_eq!(input, expected);
     }
 
-    // Dependencies behind a feature should be enabled
+    // Default dependencies chain behind a feature should be enabled
     #[test]
     fn resolve_feature_dependency_defaults() {
         let optional = make_package_node(
@@ -2237,11 +2378,17 @@ mod tests {
             vec![("default", vec!["std"]), ("std", vec![])],
             None,
         );
+        let build_optional = make_package_node(
+            "optional",
+            vec![("default", vec!["build"]), ("build", vec![])],
+            None,
+        );
         let mut child = make_package_node(
             "child",
             vec![
-                ("one", vec!["optional"]),
+                ("one", vec!["optional", "build_optional"]),
                 ("optional", vec!["dep:optional"]),
+                ("build_optional", vec!["dep:build_optional"]),
             ],
             Some(DependencyNode {
                 name: "optional".to_string(),
@@ -2251,6 +2398,13 @@ mod tests {
                 features: vec![],
             }),
         );
+        child.build_dependencies.push(DependencyNode {
+            name: "build_optional".to_string(),
+            package: RefCell::new(build_optional.clone()).into(),
+            optional: true,
+            uses_default_features: true,
+            features: vec![],
+        });
 
         let mut input = make_package_node(
             "parent",
@@ -2273,9 +2427,18 @@ mod tests {
             .borrow_mut()
             .enabled_features
             .extend(["std".to_string()]);
-        child
+        child.build_dependencies[0].optional = false;
+        child.build_dependencies[0].package = RefCell::new(build_optional).into();
+        child.build_dependencies[0]
+            .package
+            .borrow_mut()
             .enabled_features
-            .extend(["one".to_string(), "optional".to_string()]);
+            .extend(["build".to_string()]);
+        child.enabled_features.extend([
+            "one".to_string(),
+            "optional".to_string(),
+            "build_optional".to_string(),
+        ]);
 
         let expected = make_package_node(
             "parent",
@@ -2300,11 +2463,17 @@ mod tests {
             vec![("default", vec!["std"]), ("std", vec![])],
             None,
         );
+        let build_optional = make_package_node(
+            "build_optional",
+            vec![("default", vec!["build"]), ("build", vec![])],
+            None,
+        );
         let mut child = make_package_node(
             "child",
             vec![
-                ("one", vec!["optional"]),
+                ("one", vec!["optional", "build_optional"]),
                 ("optional", vec!["dep:optional"]),
+                ("build_optional", vec!["dep:build_optional"]),
             ],
             Some(DependencyNode {
                 name: "optional".to_string(),
@@ -2314,6 +2483,13 @@ mod tests {
                 features: vec![],
             }),
         );
+        child.build_dependencies.push(DependencyNode {
+            name: "build_optional".to_string(),
+            package: RefCell::new(build_optional.clone()).into(),
+            optional: true,
+            uses_default_features: false,
+            features: vec![],
+        });
 
         let mut input = make_package_node(
             "parent",
@@ -2331,9 +2507,13 @@ mod tests {
 
         child.dependencies[0].optional = false;
         child.dependencies[0].package = RefCell::new(optional).into();
-        child
-            .enabled_features
-            .extend(["one".to_string(), "optional".to_string()]);
+        child.build_dependencies[0].optional = false;
+        child.build_dependencies[0].package = RefCell::new(build_optional).into();
+        child.enabled_features.extend([
+            "one".to_string(),
+            "optional".to_string(),
+            "build_optional".to_string(),
+        ]);
 
         let expected = make_package_node(
             "parent",
@@ -2358,11 +2538,20 @@ mod tests {
             vec![("disabled", vec![]), ("enabled", vec![])],
             None,
         );
+        let build_optional = make_package_node(
+            "build_optional",
+            vec![("build_disabled", vec![]), ("build_enabled", vec![])],
+            None,
+        );
         let mut child = make_package_node(
             "child",
             vec![
                 ("optional", vec!["dep:optional"]),
-                ("hi", vec!["optional?/enabled"]),
+                ("build_optional", vec!["dep:build_optional"]),
+                (
+                    "hi",
+                    vec!["optional?/enabled", "build_optional?/build_enabled"],
+                ),
             ],
             Some(DependencyNode {
                 name: "optional".to_string(),
@@ -2372,6 +2561,13 @@ mod tests {
                 features: vec![],
             }),
         );
+        child.build_dependencies.push(DependencyNode {
+            name: "build_optional".to_string(),
+            package: RefCell::new(build_optional.clone()).into(),
+            optional: true,
+            uses_default_features: false,
+            features: vec![],
+        });
 
         let mut input = make_package_node(
             "parent",
@@ -2381,7 +2577,11 @@ mod tests {
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
-                features: vec!["optional".to_string(), "hi".to_string()],
+                features: vec![
+                    "optional".to_string(),
+                    "build_optional".to_string(),
+                    "hi".to_string(),
+                ],
             }),
         );
 
@@ -2395,9 +2595,19 @@ mod tests {
             .enabled_features
             .extend(["enabled".to_string()]);
         child.dependencies[0].features = vec!["enabled".to_string()];
-        child
+        child.build_dependencies[0].optional = false;
+        child.build_dependencies[0].package = RefCell::new(build_optional).into();
+        child.build_dependencies[0]
+            .package
+            .borrow_mut()
             .enabled_features
-            .extend(["optional".to_string(), "hi".to_string()]);
+            .extend(["build_enabled".to_string()]);
+        child.build_dependencies[0].features = vec!["build_enabled".to_string()];
+        child.enabled_features.extend([
+            "optional".to_string(),
+            "build_optional".to_string(),
+            "hi".to_string(),
+        ]);
 
         let expected = make_package_node(
             "parent",
@@ -2407,7 +2617,11 @@ mod tests {
                 package: RefCell::new(child.clone()).into(),
                 optional: false,
                 uses_default_features: true,
-                features: vec!["optional".to_string(), "hi".to_string()],
+                features: vec![
+                    "optional".to_string(),
+                    "build_optional".to_string(),
+                    "hi".to_string(),
+                ],
             }),
         );
 
