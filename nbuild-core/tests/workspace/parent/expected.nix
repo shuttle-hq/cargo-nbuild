@@ -1,12 +1,32 @@
 { pkgs ? import <nixpkgs> {} }:
 
 let
+  sourceFilter = name: type:
+    let
+      baseName = builtins.baseNameOf (builtins.toString name);
+    in
+      ! (
+        # Filter out git
+        baseName == ".gitignore"
+        || (type == "directory" && baseName == ".git")
+
+        # Filter out build results
+        || (
+          type == "directory" && baseName == "target"
+        )
+
+        # Filter out nix-build result symlinks
+        || (
+          type == "symlink" && pkgs.lib.hasPrefix "result" baseName
+        )
+      );
+
   # Core
   parent = pkgs.buildRustCrate rec {
     crateName = "parent";
     version = "0.1.0";
 
-    src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/parent;
+    src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/parent; };
 
     dependencies = [
       child_0_1_0

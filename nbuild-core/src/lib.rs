@@ -82,12 +82,32 @@ impl Package {
             r#"{{ pkgs ? import <nixpkgs> {{}} }}:
 
 let
+  sourceFilter = name: type:
+    let
+      baseName = builtins.baseNameOf (builtins.toString name);
+    in
+      ! (
+        # Filter out git
+        baseName == ".gitignore"
+        || (type == "directory" && baseName == ".git")
+
+        # Filter out build results
+        || (
+          type == "directory" && baseName == "target"
+        )
+
+        # Filter out nix-build result symlinks
+        || (
+          type == "symlink" && pkgs.lib.hasPrefix "result" baseName
+        )
+      );
+
   # Core
   {} = pkgs.buildRustCrate rec {{
     crateName = "{}";
     version = "{}";
 
-    src = {};
+    src = pkgs.lib.cleanSourceWith {{ filter = sourceFilter;  src = {}; }};
 
     dependencies = [
       {}
