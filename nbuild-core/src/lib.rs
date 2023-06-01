@@ -7,6 +7,7 @@ use std::{
     rc::Rc,
 };
 
+use cargo_lock::Lockfile;
 use cargo_metadata::{
     camino::Utf8PathBuf, semver::Version, DependencyKind, MetadataCommand, PackageId,
 };
@@ -21,7 +22,7 @@ use visitor::{
 pub struct Package {
     name: String,
     version: Version,
-    package_path: Utf8PathBuf,
+    source: Source,
     lib_path: Option<Utf8PathBuf>,
     build_path: Option<Utf8PathBuf>,
     proc_macro: bool,
@@ -43,7 +44,7 @@ impl Package {
         let Self {
             name,
             version,
-            package_path,
+            source,
             lib_path: _,
             build_path: _,
             proc_macro: _,
@@ -101,13 +102,20 @@ let
           type == "symlink" && pkgs.lib.hasPrefix "result" baseName
         )
       );
+  fetchcrate = {{ crateName, version, sha256 }}: pkgs.fetchurl {{
+    # https://www.pietroalbini.org/blog/downloading-crates-io/
+    # Not rate-limited, CDN URL.
+    name = "${{crateName}}-${{version}}.tar.gz";
+    url = "https://static.crates.io/crates/${{crateName}}/${{crateName}}-${{version}}.crate";
+    inherit sha256;
+  }};
 
   # Core
   {} = pkgs.buildRustCrate rec {{
     crateName = "{}";
     version = "{}";
 
-    src = pkgs.lib.cleanSourceWith {{ filter = sourceFilter;  src = {}; }};
+    {}
 
     dependencies = [
       {}
@@ -123,7 +131,7 @@ in
             name,
             name,
             version,
-            package_path,
+            Self::get_source(&source),
             dep_idents.join("\n      "),
             build_deps,
             edition,
@@ -220,13 +228,13 @@ in
     crateName = "{}";
     version = "{}";
 
-    src = {};{}{}{}{}{}{}{}
+    {}{}{}{}{}{}{}{}
     edition = "{}";
   }};"#,
             this.identifier(),
             this.name,
             this.version,
-            this.package_path,
+            Self::get_source(&this.source),
             lib_path,
             build_path,
             proc_macro,
@@ -257,13 +265,23 @@ in
             self.version.to_string().replace('.', "_").replace('+', "_")
         )
     }
+
+    fn get_source(source: &Source) -> String {
+        match source {
+            Source::Local(path) => format!(
+                "src = pkgs.lib.cleanSourceWith {{ filter = sourceFilter;  src = {}; }};",
+                path.display()
+            ),
+            Source::CratesIo(sha256) => format!("sha256 = \"{sha256}\";\n    src = (fetchcrate {{ inherit crateName version sha256; }});"),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct PackageNode {
     name: String,
     version: Version,
-    package_path: Utf8PathBuf,
+    source: Source,
     lib_path: Option<Utf8PathBuf>,
     build_path: Option<Utf8PathBuf>,
     proc_macro: bool,
@@ -283,6 +301,12 @@ pub struct DependencyNode {
     features: Vec<String>,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+enum Source {
+    Local(PathBuf),
+    CratesIo(String),
+}
+
 impl PackageNode {
     pub fn from_current_dir(path: impl Into<PathBuf>) -> Self {
         let platform = Platform::current().unwrap();
@@ -295,8 +319,10 @@ impl PackageNode {
             ])
             .exec()
             .unwrap();
+        let lock_file = metadata.workspace_root.join("Cargo.lock");
+        let lock_file = Lockfile::load(lock_file).unwrap();
 
-        trace!(?platform, ?metadata, "have metadata");
+        trace!(?platform, ?metadata, ?lock_file, "have metadata");
 
         let packages =
             BTreeMap::from_iter(metadata.packages.iter().map(|p| (p.id.clone(), p.clone())));
@@ -309,6 +335,16 @@ impl PackageNode {
                 .iter()
                 .map(|n| (n.id.clone(), n.clone())),
         );
+        let checksums = BTreeMap::from_iter(lock_file.packages.iter().filter_map(|p| {
+            if let Some(checksum) = &p.checksum {
+                Some((
+                    (p.name.to_string(), p.version.to_string()),
+                    checksum.to_string(),
+                ))
+            } else {
+                None
+            }
+        }));
 
         let root_id = metadata
             .resolve
@@ -325,6 +361,7 @@ impl PackageNode {
             root_id,
             &packages,
             &nodes,
+            &checksums,
             &mut resolved_packages,
             &platform,
         )
@@ -334,6 +371,7 @@ impl PackageNode {
         id: PackageId,
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
         nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
+        checksums: &BTreeMap<(String, String), String>,
         resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<PackageNode>>>,
         platform: &Platform,
     ) -> Self {
@@ -370,6 +408,7 @@ impl PackageNode {
                     &package_dependencies,
                     packages,
                     nodes,
+                    checksums,
                     resolved_packages,
                     platform,
                 )
@@ -384,13 +423,14 @@ impl PackageNode {
                     &package_build_dependencies,
                     packages,
                     nodes,
+                    checksums,
                     resolved_packages,
                     platform,
                 )
             })
             .collect();
 
-        let package_path = package.manifest_path.parent().unwrap().into();
+        let package_path: PathBuf = package.manifest_path.parent().unwrap().into();
 
         let lib_path = package
             .targets
@@ -424,10 +464,19 @@ impl PackageNode {
             .iter()
             .any(|t| t.kind.iter().any(|k| k == "proc-macro"));
 
+        let source = if package.source.is_some() {
+            let checksum = checksums
+                .get(&(package.name.to_string(), package.version.to_string()))
+                .expect("to have a checksum");
+            Source::CratesIo(checksum.to_string())
+        } else {
+            Source::Local(package_path)
+        };
+
         Self {
             name: package.name.clone(),
             version: package.version.clone(),
-            package_path,
+            source,
             lib_path,
             build_path,
             proc_macro,
@@ -458,7 +507,7 @@ impl PackageNode {
         let Self {
             name,
             version,
-            package_path,
+            source,
             lib_path,
             build_path,
             proc_macro,
@@ -521,7 +570,7 @@ impl PackageNode {
                 let package = RefCell::new(Package {
                     name: name.clone(),
                     version: version.clone(),
-                    package_path,
+                    source,
                     lib_path,
                     build_path,
                     proc_macro,
@@ -572,6 +621,7 @@ impl DependencyNode {
         parent_dependencies: &Vec<cargo_metadata::Dependency>,
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
         nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
+        checksums: &BTreeMap<(String, String), String>,
         resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<PackageNode>>>,
         platform: &Platform,
     ) -> Option<Self> {
@@ -583,6 +633,7 @@ impl DependencyNode {
                     id.clone(),
                     packages,
                     nodes,
+                    checksums,
                     resolved_packages,
                     platform,
                 ))
@@ -666,7 +717,7 @@ impl DependencyNode {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, panic::catch_unwind, path::PathBuf, str::FromStr};
+    use std::{fs, path::PathBuf, str::FromStr};
 
     use super::*;
 
@@ -681,16 +732,24 @@ mod tests {
         }
     }
 
+    impl From<PathBuf> for Source {
+        fn from(path: PathBuf) -> Self {
+            Self::Local(path)
+        }
+    }
+
+    impl From<&str> for Source {
+        fn from(sha: &str) -> Self {
+            Self::CratesIo(sha.to_string())
+        }
+    }
+
     #[test]
     fn simple_package_input() {
         let path = PathBuf::from_str(env!("CARGO_MANIFEST_DIR"))
             .unwrap()
             .join("tests")
             .join("simple");
-        let registry = PathBuf::from_str(env!("HOME"))
-            .unwrap()
-            .join(".cargo")
-            .join("registry");
 
         let package = PackageNode::from_current_dir(path.clone());
 
@@ -698,7 +757,7 @@ mod tests {
             package,
             PackageNode {
                 name: "simple".to_string(),
-                package_path: Utf8PathBuf::from_path_buf(path).unwrap(),
+                source: path.into(),
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
@@ -708,10 +767,8 @@ mod tests {
                     package: RefCell::new(PackageNode {
                         name: "itoa".to_string(),
                         version: "1.0.6".parse().unwrap(),
-                        package_path: Utf8PathBuf::from_path_buf(
-                            registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
-                        )
-                        .unwrap(),
+                        source: "453ad9f582a441959e5f0d088b02ce04cfe8d51a8eaf077f12ac6d3e94164ca6"
+                            .into(),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -734,10 +791,8 @@ mod tests {
                     package: RefCell::new(PackageNode {
                         name: "arbitrary".to_string(),
                         version: "1.3.0".parse().unwrap(),
-                        package_path: Utf8PathBuf::from_path_buf(
-                            registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0")
-                        )
-                        .unwrap(),
+                        source: "e2d098ff73c1ca148721f37baad5ea6a465a13f9573aba8641fbbbae8164a54e"
+                            .into(),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -775,17 +830,14 @@ mod tests {
         let package = Package {
             name: "simple".to_string(),
             version: "0.1.0".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(path.clone()).unwrap(),
+            source: path.clone().into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,
             dependencies: vec![Package {
                 name: "itoa".to_string(),
                 version: "1.0.6".parse().unwrap(),
-                package_path:
-                    "/home/user/.cargo/registry/src/github.com-1ecc6299db9ec823/itoa-1.0.6"
-                        .parse()
-                        .unwrap(),
+                source: "itoa_sha".into(),
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
@@ -799,10 +851,7 @@ mod tests {
             build_dependencies: vec![Package {
                 name: "arbitrary".to_string(),
                 version: "1.3.0".parse().unwrap(),
-                package_path:
-                    "/home/user/.cargo/registry/src/github.com-1ecc6299db9ec823/arbitrary-1.3.0"
-                        .parse()
-                        .unwrap(),
+                source: "arbitrary_sha".into(),
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
@@ -835,17 +884,12 @@ mod tests {
 
         let package = PackageNode::from_current_dir(path.clone());
 
-        let registry = PathBuf::from_str(env!("HOME"))
-            .unwrap()
-            .join(".cargo")
-            .join("registry");
-
         assert_eq!(
             package,
             PackageNode {
                 name: "parent".to_string(),
                 version: "0.1.0".parse().unwrap(),
-                package_path: Utf8PathBuf::from_path_buf(path).unwrap(),
+                source: path.into(),
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
@@ -855,8 +899,7 @@ mod tests {
                         package: RefCell::new(PackageNode {
                             name: "child".to_string(),
                             version: "0.1.0".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(workspace.join("child"))
-                                .unwrap(),
+                            source: workspace.join("child").into(),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -866,11 +909,7 @@ mod tests {
                                     package: RefCell::new(PackageNode {
                                         name: "fnv".to_string(),
                                         version: "1.0.7".parse().unwrap(),
-                                        package_path: Utf8PathBuf::from_path_buf(
-                                            registry
-                                                .join("src/github.com-1ecc6299db9ec823/fnv-1.0.7")
-                                        )
-                                        .unwrap(),
+                                        source: "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1".into(),
                                         lib_path: Some("lib.rs".into()),
                                         build_path: None,
                                         proc_macro: false,
@@ -893,11 +932,7 @@ mod tests {
                                     package: RefCell::new(PackageNode {
                                         name: "itoa".to_string(),
                                         version: "1.0.6".parse().unwrap(),
-                                        package_path: Utf8PathBuf::from_path_buf(
-                                            registry
-                                                .join("src/github.com-1ecc6299db9ec823/itoa-1.0.6")
-                                        )
-                                        .unwrap(),
+                                        source: "453ad9f582a441959e5f0d088b02ce04cfe8d51a8eaf077f12ac6d3e94164ca6".into(),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: None,
                                         proc_macro: false,
@@ -920,12 +955,7 @@ mod tests {
                                     package: RefCell::new(PackageNode {
                                         name: "libc".to_string(),
                                         version: "0.2.144".parse().unwrap(),
-                                        package_path: Utf8PathBuf::from_path_buf(
-                                            registry.join(
-                                                "src/github.com-1ecc6299db9ec823/libc-0.2.144"
-                                            )
-                                        )
-                                        .unwrap(),
+                                        source: "2b00cc1c228a6782d0f076e7b232802e0c5689d41bb5df366f2a6b6621cfdfe1".into(),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: Some("build.rs".into()),
                                         proc_macro: false,
@@ -963,10 +993,7 @@ mod tests {
                                     package: RefCell::new(PackageNode {
                                         name: "rename".to_string(),
                                         version: "0.1.0".parse().unwrap(),
-                                        package_path: Utf8PathBuf::from_path_buf(
-                                            workspace.join("rename")
-                                        )
-                                        .unwrap(),
+                                        source: workspace.join("rename").into(),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: None,
                                         proc_macro: false,
@@ -986,10 +1013,7 @@ mod tests {
                                     package: RefCell::new(PackageNode {
                                         name: "rustversion".to_string(),
                                         version: "1.0.12".parse().unwrap(),
-                                        package_path: Utf8PathBuf::from_path_buf(registry.join(
-                                            "src/github.com-1ecc6299db9ec823/rustversion-1.0.12"
-                                        ))
-                                        .unwrap(),
+                                        source: "4f3208ce4d8448b3f3e7d168a73f5e0c43a61e32930de3bceeccedb388b6bf06".into(),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: Some("build/build.rs".into()),
                                         proc_macro: true,
@@ -1028,10 +1052,7 @@ mod tests {
                         package: RefCell::new(PackageNode {
                             name: "itoa".to_string(),
                             version: "0.4.8".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8")
-                            )
-                            .unwrap(),
+                            source: "b71991ff56294aa922b450139ee08b3bfc70982c6b2c7562771375cf73542dd4".into(),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -1055,10 +1076,7 @@ mod tests {
                         package: RefCell::new(PackageNode {
                             name: "libc".to_string(),
                             version: "0.2.144".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144")
-                            )
-                            .unwrap(),
+                            source: "2b00cc1c228a6782d0f076e7b232802e0c5689d41bb5df366f2a6b6621cfdfe1".into(),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: Some("build.rs".into()),
                             proc_macro: false,
@@ -1096,8 +1114,7 @@ mod tests {
                         package: RefCell::new(PackageNode {
                             name: "targets".to_string(),
                             version: "0.1.0".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(workspace.join("targets"))
-                                .unwrap(),
+                            source: workspace.join("targets").into(),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -1132,18 +1149,10 @@ mod tests {
             .join("workspace");
         let path = workspace.join("parent");
 
-        let registry = PathBuf::from_str(env!("HOME"))
-            .unwrap()
-            .join(".cargo")
-            .join("registry");
-
         let libc = RefCell::new(Package {
             name: "libc".to_string(),
             version: "0.2.144".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(
-                registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144"),
-            )
-            .unwrap(),
+            source: "sha".into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -1158,7 +1167,7 @@ mod tests {
         let package = Package {
             name: "parent".to_string(),
             version: "0.1.0".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(path.clone()).unwrap(),
+            source: path.clone().into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -1166,7 +1175,7 @@ mod tests {
                 Package {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
-                    package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
+                    source: workspace.join("child").into(),
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -1174,10 +1183,7 @@ mod tests {
                         Package {
                             name: "fnv".to_string(),
                             version: "1.0.7".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/fnv-1.0.7"),
-                            )
-                            .unwrap(),
+                            source: "sha".into(),
                             lib_path: Some("lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -1186,14 +1192,12 @@ mod tests {
                             features: Default::default(),
                             edition: "2015".to_string(),
                             printed: false,
-                        }.into(),
+                        }
+                        .into(),
                         Package {
                             name: "itoa".to_string(),
                             version: "1.0.6".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
-                            )
-                            .unwrap(),
+                            source: "sha".into(),
                             lib_path: None,
                             build_path: None,
                             proc_macro: false,
@@ -1202,8 +1206,9 @@ mod tests {
                             features: Default::default(),
                             edition: "2018".to_string(),
                             printed: false,
-                        }.into(),
-                        Dependency{
+                        }
+                        .into(),
+                        Dependency {
                             package: Rc::clone(&libc),
                             rename: None,
                         },
@@ -1211,8 +1216,7 @@ mod tests {
                             package: RefCell::new(Package {
                                 name: "rename".to_string(),
                                 version: "0.1.0".parse().unwrap(),
-                                package_path: Utf8PathBuf::from_path_buf(workspace.join("rename"))
-                                    .unwrap(),
+                                source: workspace.join("rename").into(),
                                 lib_path: None,
                                 build_path: None,
                                 proc_macro: false,
@@ -1228,10 +1232,7 @@ mod tests {
                         Package {
                             name: "rustversion".to_string(),
                             version: "1.0.12".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/rustversion-1.0.12"),
-                            )
-                            .unwrap(),
+                            source: "sha".into(),
                             lib_path: None,
                             build_path: Some("build/build.rs".into()),
                             proc_macro: true,
@@ -1240,14 +1241,13 @@ mod tests {
                             features: Default::default(),
                             edition: "2018".to_string(),
                             printed: false,
-                        }.into(),
+                        }
+                        .into(),
                     ],
                     build_dependencies: vec![Package {
                         name: "arbitrary".to_string(),
                         version: "1.3.0".parse().unwrap(),
-                        package_path: "/home/user/.cargo/registry/src/github.com-1ecc6299db9ec823/arbitrary-1.3.0"
-                            .parse()
-                            .unwrap(),
+                        source: "sha".into(),
                         lib_path: None,
                         build_path: None,
                         proc_macro: false,
@@ -1256,18 +1256,17 @@ mod tests {
                         features: Default::default(),
                         edition: "2018".to_string(),
                         printed: false,
-                    }.into()],
+                    }
+                    .into()],
                     features: vec!["one".to_string()],
                     edition: "2021".to_string(),
                     printed: false,
-                }.into(),
+                }
+                .into(),
                 Package {
                     name: "itoa".to_string(),
                     version: "0.4.8".parse().unwrap(),
-                    package_path: Utf8PathBuf::from_path_buf(
-                        registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8"),
-                    )
-                    .unwrap(),
+                    source: "sha".into(),
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -1276,7 +1275,8 @@ mod tests {
                     features: Default::default(),
                     edition: "2018".to_string(),
                     printed: false,
-                }.into(),
+                }
+                .into(),
                 Dependency {
                     package: libc,
                     rename: None,
@@ -1284,7 +1284,7 @@ mod tests {
                 Package {
                     name: "targets".to_string(),
                     version: "0.1.0".parse().unwrap(),
-                    package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
+                    source: workspace.join("targets").into(),
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -1293,7 +1293,8 @@ mod tests {
                     features: vec!["unix".to_string()],
                     edition: "2021".to_string(),
                     printed: false,
-                }.into(),
+                }
+                .into(),
             ],
             build_dependencies: Default::default(),
             features: Default::default(),
@@ -1316,18 +1317,10 @@ mod tests {
             .join("workspace");
         let path = workspace.join("parent");
 
-        let registry = PathBuf::from_str(env!("HOME"))
-            .unwrap()
-            .join(".cargo")
-            .join("registry");
-
         let libc = RefCell::new(PackageNode {
             name: "libc".to_string(),
             version: "0.2.144".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(
-                registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144"),
-            )
-            .unwrap(),
+            source: "libc_sha".into(),
             lib_path: Some("src/lib.rs".into()),
             build_path: Some("build.rs".into()),
             proc_macro: false,
@@ -1356,10 +1349,7 @@ mod tests {
         let optional = RefCell::new(PackageNode {
             name: "optional".to_string(),
             version: "1.0.0".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(
-                registry.join("src/github.com-1ecc6299db9ec823/optional-1.0.0"),
-            )
-            .unwrap(),
+            source: "optional_sha".into(),
             lib_path: Some("src/lib.rs".into()),
             build_path: None,
             proc_macro: false,
@@ -1377,7 +1367,7 @@ mod tests {
         let input = PackageNode {
             name: "parent".to_string(),
             version: "0.1.0".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(path.clone()).unwrap(),
+            source: path.clone().into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -1387,7 +1377,7 @@ mod tests {
                     package: RefCell::new(PackageNode {
                         name: "child".to_string(),
                         version: "0.1.0".parse().unwrap(),
-                        package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
+                        source: workspace.join("child").into(),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -1397,10 +1387,7 @@ mod tests {
                                 package: RefCell::new(PackageNode {
                                     name: "fnv".to_string(),
                                     version: "1.0.7".parse().unwrap(),
-                                    package_path: Utf8PathBuf::from_path_buf(
-                                        registry.join("src/github.com-1ecc6299db9ec823/fnv-1.0.7"),
-                                    )
-                                    .unwrap(),
+                                    source: "fnv_sha".into(),
                                     lib_path: Some("lib.rs".into()),
                                     build_path: None,
                                     proc_macro: false,
@@ -1423,10 +1410,7 @@ mod tests {
                                 package: RefCell::new(PackageNode {
                                     name: "itoa".to_string(),
                                     version: "1.0.6".parse().unwrap(),
-                                    package_path: Utf8PathBuf::from_path_buf(
-                                        registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
-                                    )
-                                    .unwrap(),
+                                    source: "itoa_sha".into(),
                                     lib_path: Some("src/lib.rs".into()),
                                     build_path: None,
                                     proc_macro: false,
@@ -1463,10 +1447,7 @@ mod tests {
                                 package: RefCell::new(PackageNode {
                                     name: "rename".to_string(),
                                     version: "0.1.0".parse().unwrap(),
-                                    package_path: Utf8PathBuf::from_path_buf(
-                                        workspace.join("rename"),
-                                    )
-                                    .unwrap(),
+                                    source: workspace.join("rename").into(),
                                     lib_path: Some("src/lib.rs".into()),
                                     build_path: None,
                                     proc_macro: false,
@@ -1486,10 +1467,7 @@ mod tests {
                                 package: RefCell::new(PackageNode {
                                     name: "rustversion".to_string(),
                                     version: "1.0.12".parse().unwrap(),
-                                    package_path: Utf8PathBuf::from_path_buf(registry.join(
-                                        "src/github.com-1ecc6299db9ec823/rustversion-1.0.12",
-                                    ))
-                                    .unwrap(),
+                                    source: "rustversion_sha".into(),
                                     lib_path: Some("src/lib.rs".into()),
                                     build_path: Some("build/build.rs".into()),
                                     proc_macro: true,
@@ -1510,11 +1488,7 @@ mod tests {
                             package: RefCell::new(PackageNode {
                                 name: "arbitrary".to_string(),
                                 version: "1.3.0".parse().unwrap(),
-                                package_path: Utf8PathBuf::from_path_buf(
-                                    registry
-                                        .join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0"),
-                                )
-                                .unwrap(),
+                                source: "arbitrary_sha".into(),
                                 lib_path: Some("src/lib.rs".into()),
                                 build_path: None,
                                 proc_macro: false,
@@ -1560,10 +1534,7 @@ mod tests {
                     package: RefCell::new(PackageNode {
                         name: "itoa".to_string(),
                         version: "0.4.8".parse().unwrap(),
-                        package_path: Utf8PathBuf::from_path_buf(
-                            registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8"),
-                        )
-                        .unwrap(),
+                        source: "itoa_sha".into(),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -1602,8 +1573,7 @@ mod tests {
                     package: RefCell::new(PackageNode {
                         name: "targets".to_string(),
                         version: "0.1.0".parse().unwrap(),
-                        package_path: Utf8PathBuf::from_path_buf(workspace.join("targets"))
-                            .unwrap(),
+                        source: workspace.join("targets").into(),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -1633,10 +1603,7 @@ mod tests {
         let libc = RefCell::new(Package {
             name: "libc".to_string(),
             version: "0.2.144".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(
-                registry.join("src/github.com-1ecc6299db9ec823/libc-0.2.144"),
-            )
-            .unwrap(),
+            source: "libc_sha".into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -1650,7 +1617,7 @@ mod tests {
         let expected = Package {
             name: "parent".to_string(),
             version: "0.1.0".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(path).unwrap(),
+            source: path.into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -1658,7 +1625,7 @@ mod tests {
                 Package {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
-                    package_path: Utf8PathBuf::from_path_buf(workspace.join("child")).unwrap(),
+                    source: workspace.join("child").into(),
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -1666,10 +1633,7 @@ mod tests {
                         Package {
                             name: "fnv".to_string(),
                             version: "1.0.7".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/fnv-1.0.7"),
-                            )
-                            .unwrap(),
+                            source: "fnv_sha".into(),
                             lib_path: Some("lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -1683,10 +1647,7 @@ mod tests {
                         Package {
                             name: "itoa".to_string(),
                             version: "1.0.6".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/itoa-1.0.6"),
-                            )
-                            .unwrap(),
+                            source: "itoa_sha".into(),
                             lib_path: None,
                             build_path: None,
                             proc_macro: false,
@@ -1705,8 +1666,7 @@ mod tests {
                             package: RefCell::new(Package {
                                 name: "rename".to_string(),
                                 version: "0.1.0".parse().unwrap(),
-                                package_path: Utf8PathBuf::from_path_buf(workspace.join("rename"))
-                                    .unwrap(),
+                                source: workspace.join("rename").into(),
                                 lib_path: None,
                                 build_path: None,
                                 proc_macro: false,
@@ -1722,10 +1682,7 @@ mod tests {
                         Package {
                             name: "rustversion".to_string(),
                             version: "1.0.12".parse().unwrap(),
-                            package_path: Utf8PathBuf::from_path_buf(
-                                registry.join("src/github.com-1ecc6299db9ec823/rustversion-1.0.12"),
-                            )
-                            .unwrap(),
+                            source: "rustversion_sha".into(),
                             lib_path: None,
                             build_path: Some("build/build.rs".into()),
                             proc_macro: true,
@@ -1740,10 +1697,7 @@ mod tests {
                     build_dependencies: vec![Package {
                         name: "arbitrary".to_string(),
                         version: "1.3.0".parse().unwrap(),
-                        package_path: Utf8PathBuf::from_path_buf(
-                            registry.join("src/github.com-1ecc6299db9ec823/arbitrary-1.3.0"),
-                        )
-                        .unwrap(),
+                        source: "arbitrary_sha".into(),
                         lib_path: None,
                         build_path: None,
                         proc_macro: false,
@@ -1762,10 +1716,7 @@ mod tests {
                 Package {
                     name: "itoa".to_string(),
                     version: "0.4.8".parse().unwrap(),
-                    package_path: Utf8PathBuf::from_path_buf(
-                        registry.join("src/github.com-1ecc6299db9ec823/itoa-0.4.8"),
-                    )
-                    .unwrap(),
+                    source: "itoa_sha".into(),
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -1783,7 +1734,7 @@ mod tests {
                 Package {
                     name: "targets".to_string(),
                     version: "0.1.0".parse().unwrap(),
-                    package_path: Utf8PathBuf::from_path_buf(workspace.join("targets")).unwrap(),
+                    source: workspace.join("targets").into(),
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -1826,7 +1777,7 @@ mod tests {
         PackageNode {
             name: name.to_string(),
             version: "0.1.0".parse().unwrap(),
-            package_path: Utf8PathBuf::from_path_buf(PathBuf::from_str(name).unwrap()).unwrap(),
+            source: "sha".into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,

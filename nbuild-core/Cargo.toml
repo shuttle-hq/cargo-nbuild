@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cargo-lock = "9.0.0"
 cargo_metadata = "0.15.4"
 target-spec = "1.4.0"
 tracing = "0.1.37"
