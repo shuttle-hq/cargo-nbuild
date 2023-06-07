@@ -175,6 +175,8 @@ in
         let features = if this.features.is_empty() {
             Default::default()
         } else {
+            this.features.sort();
+
             format!(
                 "\n    features = [{}];",
                 this.features
