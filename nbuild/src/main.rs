@@ -1,13 +1,10 @@
-use std::env::current_dir;
+use std::{env::current_dir, process::Stdio};
 
 use nbuild_core::PackageNode;
-use runix::{
-    arguments::{eval::EvaluationArgs, source::SourceArgs, NixArgs},
-    command::Build,
-    command_line::NixCommandLine,
-    RunJson,
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
 };
-use tracing::debug;
 use tracing_subscriber::prelude::*;
 
 #[tokio::main]
@@ -23,25 +20,37 @@ async fn main() {
     let mut package = PackageNode::from_current_dir(current_dir().unwrap());
     package.resolve();
 
-    let expr = package.into_package().to_derivative();
-    let cli = NixCommandLine::default();
+    package.into_package().into_file();
 
-    debug!(%expr, "have nix expression");
+    let mut cmd = Command::new("nix");
+    cmd.args([
+        "build",
+        "--file",
+        ".nbuild.nix",
+        "--max-jobs",
+        "auto",
+        "--cores",
+        "0",
+    ])
+    .stdout(Stdio::piped());
 
-    let value = Build {
-        eval: EvaluationArgs {
-            impure: true.into(),
-        },
-        source: SourceArgs {
-            expr: Some(expr.into()),
-        },
-        ..Default::default()
-    }
-    .run_json(&cli, &NixArgs::default())
-    .await;
+    let mut child = cmd.spawn().expect("to spawn build command");
+    let stdout = child.stdout.take().expect("to get handle on stdout");
 
-    match value {
-        Ok(value) => println!("{value}"),
-        Err(error) => println!("failed: {error}"),
+    let mut reader = BufReader::new(stdout).lines();
+
+    // Drive process forward
+    tokio::spawn(async move {
+        let status = child.wait().await.expect("build to finish");
+
+        if status.success() {
+            println!("Build done");
+        } else {
+            println!("Build failed");
+        }
+    });
+
+    while let Some(line) = reader.next_line().await.expect("to get line") {
+        println!("{line}");
     }
 }

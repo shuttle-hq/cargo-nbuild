@@ -3,6 +3,7 @@ mod visitor;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
+    fs,
     path::PathBuf,
     rc::Rc,
 };
@@ -40,6 +41,12 @@ pub struct Dependency {
 }
 
 impl Package {
+    pub fn into_file(self) {
+        let expr = self.to_derivative();
+
+        fs::write(".nbuild.nix", expr).unwrap();
+    }
+
     pub fn to_derivative(self) -> String {
         let Self {
             name,
