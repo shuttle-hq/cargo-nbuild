@@ -54,6 +54,8 @@ let
     ];
     buildDependencies = [arbitrary_1_3_0];
     edition = "2021";
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
 
@@ -65,6 +67,8 @@ let
     sha256 = "itoa_sha";
     edition = "2018";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   arbitrary_1_3_0 = buildRustCrate rec {
@@ -74,6 +78,8 @@ let
     sha256 = "arbitrary_sha";
     edition = "2018";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
 in

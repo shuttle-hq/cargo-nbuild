@@ -135,6 +135,8 @@ let
       {}
     ];{}
     edition = "{}";
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   }};
 
@@ -246,6 +248,8 @@ in
     {}{}{}{}{}{}{}{}
     edition = "{}";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   }};"#,
             this.identifier(),

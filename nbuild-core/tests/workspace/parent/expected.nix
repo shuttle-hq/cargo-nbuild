@@ -56,6 +56,8 @@ let
       targets_0_1_0
     ];
     edition = "2021";
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
 
@@ -71,6 +73,8 @@ let
     features = ["one"];
     edition = "2021";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   fnv_1_0_7 = buildRustCrate rec {
@@ -81,6 +85,8 @@ let
     libPath = "lib.rs";
     edition = "2015";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   itoa_1_0_6 = buildRustCrate rec {
@@ -90,6 +96,8 @@ let
     sha256 = "sha";
     edition = "2018";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   libc_0_2_144 = buildRustCrate rec {
@@ -99,6 +107,8 @@ let
     sha256 = "sha";
     edition = "2015";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   rename_0_1_0 = buildRustCrate rec {
@@ -108,6 +118,8 @@ let
     src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /media/git/shuttle-hq/cargo-nbuild/nbuild-core/tests/workspace/rename; };
     edition = "2021";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   rustversion_1_0_12 = buildRustCrate rec {
@@ -119,6 +131,8 @@ let
     procMacro = true;
     edition = "2018";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   arbitrary_1_3_0 = buildRustCrate rec {
@@ -128,6 +142,8 @@ let
     sha256 = "sha";
     edition = "2018";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   itoa_0_4_8 = buildRustCrate rec {
@@ -137,6 +153,8 @@ let
     sha256 = "sha";
     edition = "2018";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
   targets_0_1_0 = buildRustCrate rec {
@@ -147,6 +165,8 @@ let
     features = ["unix"];
     edition = "2021";
     crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
     inherit preBuild;
   };
 in
