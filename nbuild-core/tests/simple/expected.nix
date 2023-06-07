@@ -30,17 +30,17 @@ let
   defaultCrateOverrides = pkgs.defaultCrateOverrides // {
     opentelemetry-proto = attrs: { buildInputs = [ pkgs.protobuf ]; };
   };
-  buildRustCrate = pkgs.buildRustCrate.override {
-    inherit rustc defaultCrateOverrides;
-  };
-  preBuild = "rustc -vV";
-  fetchcrate = { crateName, version, sha256 }: pkgs.fetchurl {
+  fetchCrate = { crateName, version, sha256 }: pkgs.fetchurl {
     # https://www.pietroalbini.org/blog/downloading-crates-io/
     # Not rate-limited, CDN URL.
     name = "${crateName}-${version}.tar.gz";
     url = "https://static.crates.io/crates/${crateName}/${crateName}-${version}.crate";
     inherit sha256;
   };
+  buildRustCrate = pkgs.buildRustCrate.override {
+    inherit rustc defaultCrateOverrides fetchCrate;
+  };
+  preBuild = "rustc -vV";
 
   # Core
   simple = buildRustCrate rec {
@@ -63,7 +63,6 @@ let
     version = "1.0.6";
 
     sha256 = "itoa_sha";
-    src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
     crateBin = [];
     inherit preBuild;
@@ -73,7 +72,6 @@ let
     version = "1.3.0";
 
     sha256 = "arbitrary_sha";
-    src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
     crateBin = [];
     inherit preBuild;

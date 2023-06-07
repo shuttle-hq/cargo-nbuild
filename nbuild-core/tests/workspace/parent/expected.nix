@@ -30,17 +30,17 @@ let
   defaultCrateOverrides = pkgs.defaultCrateOverrides // {
     opentelemetry-proto = attrs: { buildInputs = [ pkgs.protobuf ]; };
   };
-  buildRustCrate = pkgs.buildRustCrate.override {
-    inherit rustc defaultCrateOverrides;
-  };
-  preBuild = "rustc -vV";
-  fetchcrate = { crateName, version, sha256 }: pkgs.fetchurl {
+  fetchCrate = { crateName, version, sha256 }: pkgs.fetchurl {
     # https://www.pietroalbini.org/blog/downloading-crates-io/
     # Not rate-limited, CDN URL.
     name = "${crateName}-${version}.tar.gz";
     url = "https://static.crates.io/crates/${crateName}/${crateName}-${version}.crate";
     inherit sha256;
   };
+  buildRustCrate = pkgs.buildRustCrate.override {
+    inherit rustc defaultCrateOverrides fetchCrate;
+  };
+  preBuild = "rustc -vV";
 
   # Core
   parent = buildRustCrate rec {
@@ -78,7 +78,6 @@ let
     version = "1.0.7";
 
     sha256 = "sha";
-    src = (fetchcrate { inherit crateName version sha256; });
     libPath = "lib.rs";
     edition = "2015";
     crateBin = [];
@@ -89,7 +88,6 @@ let
     version = "1.0.6";
 
     sha256 = "sha";
-    src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
     crateBin = [];
     inherit preBuild;
@@ -99,7 +97,6 @@ let
     version = "0.2.144";
 
     sha256 = "sha";
-    src = (fetchcrate { inherit crateName version sha256; });
     edition = "2015";
     crateBin = [];
     inherit preBuild;
@@ -118,7 +115,6 @@ let
     version = "1.0.12";
 
     sha256 = "sha";
-    src = (fetchcrate { inherit crateName version sha256; });
     build = "build/build.rs";
     procMacro = true;
     edition = "2018";
@@ -130,7 +126,6 @@ let
     version = "1.3.0";
 
     sha256 = "sha";
-    src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
     crateBin = [];
     inherit preBuild;
@@ -140,7 +135,6 @@ let
     version = "0.4.8";
 
     sha256 = "sha";
-    src = (fetchcrate { inherit crateName version sha256; });
     edition = "2018";
     crateBin = [];
     inherit preBuild;
