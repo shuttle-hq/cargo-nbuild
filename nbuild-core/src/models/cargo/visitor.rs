@@ -2,7 +2,9 @@ use tracing::{info_span, trace};
 
 use super::{Dependency, Package};
 
+/// A visitor over cargo packages
 pub trait Visitor {
+    /// Entry point for a visitor. Defaults to visiting all dependencies which are not optional.
     fn visit(&mut self, package: &mut Package)
     where
         Self: Sized,
@@ -13,156 +15,38 @@ pub trait Visitor {
             let dependency_span = info_span!(
                 "processing dependency",
                 name = dependency.name,
-                package_name = dependency.package.borrow().name
+                package_name = dependency.package.borrow().name,
+                optional = dependency.optional,
             );
             let _dependency_span_guard = dependency_span.enter();
 
-            self.visit_dependency(dependency);
+            if !dependency.optional {
+                self.visit_dependency(dependency);
 
-            dependency.package.borrow_mut().visit(self);
-        }
-    }
-
-    fn visit_package(&mut self, _package: &mut Package) {}
-
-    fn visit_dependency(&mut self, _dependency: &Dependency) {}
-}
-
-pub struct SetDefaultVisitor;
-
-impl Visitor for SetDefaultVisitor {
-    fn visit_dependency(&mut self, dependency: &Dependency) {
-        if !dependency.optional
-            && dependency.uses_default_features
-            && dependency.package.borrow().features.contains_key("default")
-        {
-            trace!("enabling default feature");
-
-            dependency
-                .package
-                .borrow_mut()
-                .enabled_features
-                .insert("default".to_string());
-        }
-    }
-}
-
-pub struct EnableFeaturesVisitor;
-
-impl Visitor for EnableFeaturesVisitor {
-    fn visit_dependency(&mut self, dependency: &Dependency) {
-        if !dependency.optional && !dependency.features.is_empty() {
-            let features: Vec<String> = dependency
-                .features
-                .clone()
-                .iter()
-                .filter(|&f| dependency.package.borrow().features.contains_key(f))
-                .cloned()
-                .collect();
-
-            trace!(?features, "enabling features");
-
-            dependency
-                .package
-                .borrow_mut()
-                .enabled_features
-                .extend(features);
-        }
-    }
-}
-
-pub struct UnpackDefaultVisitor;
-
-impl Visitor for UnpackDefaultVisitor {
-    fn visit_package(&mut self, package: &mut Package) {
-        let has_default = package.enabled_features.remove("default");
-
-        if has_default {
-            if let Some(default_features) = package.features.get("default") {
-                trace!(?default_features, "enabling default features");
-
-                package.enabled_features.extend(default_features.clone());
+                dependency.package.borrow_mut().visit(self);
             }
         }
     }
+
+    /// Visit a package
+    fn visit_package(&mut self, _package: &mut Package) {}
+
+    /// Visit a dependency of a package
+    fn visit_dependency(&mut self, _dependency: &Dependency) {}
 }
 
-pub struct UnpackChainVisitor;
+/// Visitor to resolve the enabled dependencies and the features on those dependencies
+pub struct ResolveVisitor;
 
-impl Visitor for UnpackChainVisitor {
+impl Visitor for ResolveVisitor {
+    fn visit_dependency(&mut self, dependency: &Dependency) {
+        add_default(dependency);
+        activate_features(dependency);
+    }
+
     fn visit_package(&mut self, package: &mut Package) {
         loop {
-            let new_features: Vec<_> = package
-                .enabled_features
-                .iter()
-                .filter_map(|f| package.features.get(f))
-                .flatten()
-                .cloned()
-                .filter(|f| !package.enabled_features.contains(f))
-                .filter_map(|f| {
-                    if let Some(dependency_name) = f.strip_prefix("dep:") {
-                        if let Some(dependency) = package
-                            .dependencies
-                            .iter_mut()
-                            .chain(package.build_dependencies.iter_mut())
-                            .find(|d| d.name == dependency_name)
-                        {
-                            trace!(name = dependency_name, "activating optional dependency");
-                            dependency.optional = false;
-
-                            if dependency.uses_default_features {
-                                let mut dependency_package = dependency.package.borrow_mut();
-
-                                if let Some(default_features) =
-                                    dependency_package.features.get("default").cloned()
-                                {
-                                    trace!(?default_features, "add default features");
-
-                                    dependency_package.enabled_features.extend(default_features);
-                                }
-                            }
-
-                            if !dependency.features.is_empty() {
-                                trace!(features = ?dependency.features, "add dependency features");
-
-                                dependency
-                                    .package
-                                    .borrow_mut()
-                                    .enabled_features
-                                    .extend(dependency.features.iter().cloned());
-                            }
-                        }
-
-                        return None;
-                    } else {
-                        if let Some((dependency_name, feature)) = f.split_once("/") {
-                            if let Some(dependency) = package
-                                .dependencies
-                                .iter_mut()
-                                .chain(package.build_dependencies.iter_mut())
-                                .find(|d| d.name == dependency_name)
-                            {
-                                let feature = feature.to_string();
-
-                                if !dependency.features.contains(&feature) {
-                                    dependency.features.push(feature.clone());
-                                }
-
-                                dependency
-                                    .package
-                                    .borrow_mut()
-                                    .enabled_features
-                                    .insert(feature);
-
-                                return Some(dependency_name.to_string());
-                            }
-                        }
-                    }
-
-                    Some(f)
-                })
-                .filter(|f| !package.enabled_features.contains(f))
-                .collect();
+            let new_features = unpack_features(package);
 
             if !new_features.is_empty() {
                 trace!(?new_features, "adding new features");
@@ -172,46 +56,138 @@ impl Visitor for UnpackChainVisitor {
                 break;
             }
         }
+
+        unpack_optionals_features(package);
     }
 }
 
-pub struct OptionalDependencyFeaturesVisitor;
+/// Add the "default" feature if default-features is not false
+/// https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#choosing-features
+fn add_default(dependency: &Dependency) {
+    if dependency.uses_default_features
+        && dependency.package.borrow().features.contains_key("default")
+    {
+        trace!("enabling default feature");
 
-impl Visitor for OptionalDependencyFeaturesVisitor {
-    fn visit_package(&mut self, package: &mut Package) {
-        let new_dependencies_features: Vec<_> = package
+        dependency
+            .package
+            .borrow_mut()
             .enabled_features
+            .insert("default".to_string());
+    }
+}
+
+/// Activate all the feature on a dependency
+fn activate_features(dependency: &Dependency) {
+    if !dependency.features.is_empty() {
+        let features: Vec<String> = dependency
+            .features
+            .clone()
             .iter()
-            .filter_map(|f| f.split_once("?/"))
-            .map(|(d, f)| (d.to_string(), f.to_string()))
+            .filter(|&f| dependency.package.borrow().features.contains_key(f))
+            .cloned()
             .collect();
 
-        for (dependency_name, feature) in new_dependencies_features {
-            if let Some(dependency) = package
-                .dependencies_iter_mut()
-                .find(|d| d.name == dependency_name && !d.optional)
-            {
-                if !dependency.features.contains(&feature) {
-                    dependency.features.push(feature.clone());
+        trace!(?features, "enabling features");
+
+        dependency
+            .package
+            .borrow_mut()
+            .enabled_features
+            .extend(features);
+    }
+}
+
+/// Get new features on a crate's "chain" that have not been seen before
+fn unpack_features(package: &mut Package) -> Vec<String> {
+    package
+        .enabled_features
+        .iter()
+        .filter_map(|f| package.features.get(f))
+        .flatten()
+        .cloned()
+        .filter(|f| !package.enabled_features.contains(f)) // Don't process a "leaf" feature
+        .filter_map(|f| {
+            // Activate an optional dependency that is turned on by a feature
+            // https://doc.rust-lang.org/cargo/reference/features.html#optional-dependencies
+            if let Some(dependency_name) = f.strip_prefix("dep:") {
+                if let Some(dependency) = package
+                    .dependencies
+                    .iter_mut()
+                    .chain(package.build_dependencies.iter_mut())
+                    .find(|d| d.name == dependency_name)
+                {
+                    trace!(name = dependency_name, "activating optional dependency");
+                    dependency.optional = false;
                 }
 
-                trace!(
-                    dependency = dependency_name,
-                    feature,
-                    "adding feature on optional dependency"
-                );
+                // We are activating an optional dependency and not enabling a new feature
+                return None;
+            } else {
+                // Activate a dependency's features
+                // https://doc.rust-lang.org/cargo/reference/features.html#dependency-features
+                if let Some((dependency_name, feature)) = f.split_once("/") {
+                    if let Some(dependency) = package
+                        .dependencies
+                        .iter_mut()
+                        .chain(package.build_dependencies.iter_mut())
+                        .find(|d| d.name == dependency_name)
+                    {
+                        let feature = feature.to_string();
 
-                dependency
-                    .package
-                    .borrow_mut()
-                    .enabled_features
-                    .insert(feature.clone());
+                        if !dependency.features.contains(&feature) {
+                            dependency.features.push(feature.clone());
+                        }
+
+                        return Some(dependency_name.to_string());
+                    }
+                }
             }
 
-            package
-                .enabled_features
-                .remove(&format!("{dependency_name}?/{feature}"));
+            Some(f)
+        })
+        .filter(|f| !package.enabled_features.contains(f)) // We only want to unpack new features
+        .collect()
+}
+
+/// Activate features on optional dependencies where the dependencies was made non-optional by a previous feature
+/// https://doc.rust-lang.org/cargo/reference/features.html#dependency-features
+fn unpack_optionals_features(package: &mut Package) {
+    let new_dependencies_features: Vec<_> = package
+        .enabled_features
+        .iter()
+        .filter_map(|f| f.split_once("?/"))
+        .map(|(d, f)| (d.to_string(), f.to_string()))
+        .collect();
+
+    for (dependency_name, feature) in new_dependencies_features {
+        if let Some(dependency) = package
+            .dependencies_iter_mut()
+            .find(|d| d.name == dependency_name && !d.optional)
+        {
+            if !dependency.features.contains(&feature) {
+                dependency.features.push(feature.clone());
+            }
+
+            trace!(
+                dependency = dependency_name,
+                feature,
+                "adding feature on optional dependency"
+            );
         }
+
+        package
+            .enabled_features
+            .remove(&format!("{dependency_name}?/{feature}"));
+    }
+}
+
+/// Visitor to remove "default" from enabled features
+pub struct CleanDefaults;
+
+impl Visitor for CleanDefaults {
+    fn visit_package(&mut self, package: &mut Package) {
+        package.enabled_features.remove("default");
     }
 }
 

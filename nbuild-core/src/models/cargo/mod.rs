@@ -220,11 +220,8 @@ impl Package {
     }
 
     pub fn resolve(&mut self) {
-        self.visit(&mut visitor::SetDefaultVisitor);
-        self.visit(&mut visitor::EnableFeaturesVisitor);
-        self.visit(&mut visitor::UnpackDefaultVisitor);
-        self.visit(&mut visitor::UnpackChainVisitor);
-        self.visit(&mut visitor::OptionalDependencyFeaturesVisitor);
+        self.visit(&mut visitor::ResolveVisitor);
+        self.visit(&mut visitor::CleanDefaults);
     }
 
     fn visit(&mut self, visitor: &mut impl visitor::Visitor) {
