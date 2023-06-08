@@ -1,6 +1,6 @@
 use std::{env::current_dir, process::Stdio};
 
-use nbuild_core::PackageNode;
+use nbuild_core::models::{cargo, nix};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -17,10 +17,11 @@ async fn main() {
         .with(fmt_layer)
         .init();
 
-    let mut package = PackageNode::from_current_dir(current_dir().unwrap());
+    let mut package = cargo::Package::from_current_dir(current_dir().unwrap());
     package.resolve();
 
-    package.into_package().into_file();
+    let package: nix::Package = package.into();
+    package.into_file();
 
     let mut cmd = Command::new("nix");
     cmd.args([
