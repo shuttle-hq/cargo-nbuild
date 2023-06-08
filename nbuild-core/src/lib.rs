@@ -88,9 +88,7 @@ impl Package {
 
         format!(
             r#"{{ pkgs ? import <nixpkgs> {{
-  overlays = [
-    (import (builtins.fetchTarball https://github.com/mozilla/nixpkgs-mozilla/archive/master.tar.gz))
-  ];
+  overlays = [ (import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz")) ];
 }} }}:
 
 let
@@ -113,9 +111,7 @@ let
           type == "symlink" && pkgs.lib.hasPrefix "result" baseName
         )
       );
-  rustc = ((pkgs.rustChannelOf{{ channel = "1.68.0"; }}).rust.override {{
-    extensions = ["rust-src"];
-  }});
+  rustVersion = pkgs.rust-bin.stable."1.68.0".default;
   defaultCrateOverrides = pkgs.defaultCrateOverrides // {{
     opentelemetry-proto = attrs: {{ buildInputs = [ pkgs.protobuf ]; }};
   }};
@@ -127,7 +123,8 @@ let
     inherit sha256;
   }};
   buildRustCrate = pkgs.buildRustCrate.override {{
-    inherit rustc defaultCrateOverrides fetchCrate;
+    rustc = rustVersion;
+    inherit defaultCrateOverrides fetchCrate;
   }};
   preBuild = "rustc -vV";
 
