@@ -172,8 +172,6 @@ in
         let features = if this.features.is_empty() {
             Default::default()
         } else {
-            this.features.sort();
-
             format!(
                 "\n    features = [{}];",
                 this.features
@@ -594,6 +592,10 @@ impl PackageNode {
                 let build_path =
                     build_path.and_then(|p| if p == "build.rs" { None } else { Some(p) });
 
+                // The features array needs to stay deterministic to prevent rebuilds
+                let mut features = enabled_features.into_iter().collect::<Vec<_>>();
+                features.sort();
+
                 let package = RefCell::new(Package {
                     name: name.clone(),
                     version: version.clone(),
@@ -601,7 +603,7 @@ impl PackageNode {
                     lib_path,
                     build_path,
                     proc_macro,
-                    features: enabled_features.into_iter().collect(),
+                    features,
                     dependencies,
                     build_dependencies,
                     edition,
@@ -1735,7 +1737,7 @@ mod tests {
                         printed: false,
                     }
                     .into()],
-                    features: vec!["one".to_string(), "new_name".to_string()],
+                    features: vec!["new_name".to_string(), "one".to_string()],
                     edition: "2021".to_string(),
                     printed: false,
                 }
