@@ -211,7 +211,11 @@ in
                 .iter()
                 .map(|d| {
                     if let Some(rename) = &d.rename {
-                        renames.push((d.package.borrow().name.clone(), rename.clone()));
+                        renames.push((
+                            d.package.borrow().name.clone(),
+                            rename.clone(),
+                            d.package.borrow().version.to_string(),
+                        ));
                     }
 
                     d.package.borrow().identifier()
@@ -227,7 +231,11 @@ in
                 .iter()
                 .map(|d| {
                     if let Some(rename) = &d.rename {
-                        renames.push((d.package.borrow().name.clone(), rename.clone()));
+                        renames.push((
+                            d.package.borrow().name.clone(),
+                            rename.clone(),
+                            d.package.borrow().version.to_string(),
+                        ));
                     }
 
                     d.package.borrow().identifier()
@@ -241,7 +249,9 @@ in
         } else {
             let renames = renames
                 .into_iter()
-                .map(|(name, rename)| format!("\"{name}\" = \"{rename}\";"))
+                .map(|(name, rename, version)| {
+                    format!("\"{name}\" = [{{ rename = \"{rename}\"; version = \"{version}\"; }}];")
+                })
                 .collect::<Vec<_>>()
                 .join(" ");
 
@@ -715,7 +725,7 @@ let
     src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /cargo-nbuild/nbuild-core/tests/workspace/child; };
     dependencies = [fnv_1_0_7 itoa_1_0_6 libc_0_2_144 rename_0_1_0 rustversion_1_0_12];
     buildDependencies = [arbitrary_1_3_0];
-    crateRenames = {"rename" = "new_name";};
+    crateRenames = {"rename" = [{ rename = "new_name"; version = "0.1.0"; }];};
     features = ["one"];
     edition = "2021";
     crateBin = [];
