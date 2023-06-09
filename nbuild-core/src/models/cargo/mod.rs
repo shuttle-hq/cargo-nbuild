@@ -13,6 +13,8 @@ use cargo_metadata::{camino::Utf8PathBuf, DependencyKind, MetadataCommand, Packa
 use target_spec::{Platform, TargetSpec};
 use tracing::{instrument, trace};
 
+use crate::Error;
+
 use super::Source;
 
 mod visitor;
@@ -57,8 +59,8 @@ pub struct Dependency {
 
 impl Package {
     /// Get a package from a path with a `Cargo.toml` file
-    pub fn from_current_dir(path: impl Into<PathBuf>) -> Self {
-        let platform = Platform::current().unwrap();
+    pub fn from_current_dir(path: impl Into<PathBuf>) -> Result<Self, Error> {
+        let platform = Platform::current()?;
 
         let metadata = MetadataCommand::new()
             .current_dir(path)
@@ -66,10 +68,9 @@ impl Package {
                 "--filter-platform".to_string(),
                 platform.triple_str().to_string(),
             ])
-            .exec()
-            .unwrap();
+            .exec()?;
         let lock_file = metadata.workspace_root.join("Cargo.lock");
-        let lock_file = Lockfile::load(lock_file).unwrap();
+        let lock_file = Lockfile::load(lock_file)?;
 
         trace!(?platform, ?metadata, ?lock_file, "have metadata");
 
@@ -79,7 +80,7 @@ impl Package {
             metadata
                 .resolve
                 .as_ref()
-                .unwrap()
+                .expect("metadata to have a resolve section")
                 .nodes
                 .iter()
                 .map(|n| (n.id.clone(), n.clone())),
@@ -98,22 +99,22 @@ impl Package {
         let root_id = metadata
             .resolve
             .as_ref()
-            .unwrap()
+            .expect("metadata to have a resolve section")
             .root
             .as_ref()
-            .unwrap()
+            .expect("a root from metadata")
             .clone();
 
         let mut resolved_packages = Default::default();
 
-        Self::get_package(
+        Ok(Self::get_package(
             root_id,
             &packages,
             &nodes,
             &checksums,
             &mut resolved_packages,
             &platform,
-        )
+        ))
     }
 
     /// Recursively get a package and its dependencies. Use the `resolved_packages` to make sure we only
@@ -126,8 +127,8 @@ impl Package {
         resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<Package>>>,
         platform: &Platform,
     ) -> Self {
-        let node = nodes.get(&id).unwrap().clone();
-        let package = packages.get(&id).unwrap();
+        let node = nodes.get(&id).expect("node to exist").clone();
+        let package = packages.get(&id).expect("package to exist");
 
         trace!(
             package.name,
@@ -181,6 +182,7 @@ impl Package {
             })
             .collect();
 
+        // Safe to unwrap since the manifest has to be in some directory
         let package_path: PathBuf = package.manifest_path.parent().unwrap().into();
 
         let lib_path = package
@@ -197,7 +199,7 @@ impl Package {
             .map(|t| {
                 t.src_path
                     .strip_prefix(&package_path)
-                    .unwrap()
+                    .unwrap() // Safe to unwrap since the src has to be in the package path
                     .to_path_buf()
             });
         let build_path = package
@@ -207,7 +209,7 @@ impl Package {
             .map(|t| {
                 t.src_path
                     .strip_prefix(&package_path)
-                    .unwrap()
+                    .unwrap() // Safe to unwrap since the src has to be in the package path
                     .to_path_buf()
             });
         let proc_macro = package
@@ -309,6 +311,7 @@ impl Dependency {
             .filter(|d| d.name == name)
             .filter(|d| match &d.target {
                 Some(target_spec) => {
+                    // Safe to unwrap since cargo would have failed if the target spec was not valid
                     let target_spec = TargetSpec::new(target_spec.to_string()).unwrap();
 
                     target_spec.eval(platform).unwrap_or(false)
@@ -389,7 +392,7 @@ mod tests {
             .join("tests")
             .join("simple");
 
-        let package = Package::from_current_dir(path.clone());
+        let package = Package::from_current_dir(path.clone()).unwrap();
 
         assert_eq!(
             package,
@@ -466,7 +469,7 @@ mod tests {
             .join("workspace");
         let path = workspace.join("parent");
 
-        let package = Package::from_current_dir(path.clone());
+        let package = Package::from_current_dir(path.clone()).unwrap();
 
         assert_eq!(
             package,

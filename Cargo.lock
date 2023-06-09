@@ -212,6 +212,7 @@ dependencies = [
  "cargo_metadata",
  "pretty_assertions",
  "target-spec",
+ "thiserror",
  "tracing",
 ]
 

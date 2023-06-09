@@ -9,6 +9,7 @@ edition = "2021"
 cargo-lock = "9.0.0"
 cargo_metadata = "0.15.4"
 target-spec = "1.4.0"
+thiserror = "1.0.40"
 tracing = "0.1.37"
 
 [dev-dependencies]

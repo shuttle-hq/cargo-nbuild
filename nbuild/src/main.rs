@@ -1,4 +1,4 @@
-use std::{env::current_dir, process::Stdio};
+use std::{env::current_dir, error::Error, process::Stdio};
 
 use nbuild_core::models::{cargo, nix};
 use tokio::{
@@ -8,7 +8,7 @@ use tokio::{
 use tracing_subscriber::prelude::*;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     let fmt_layer = tracing_subscriber::fmt::layer().pretty().with_ansi(false);
     let filter_layer = tracing_subscriber::EnvFilter::from_default_env();
 
@@ -17,11 +17,11 @@ async fn main() {
         .with(fmt_layer)
         .init();
 
-    let mut package = cargo::Package::from_current_dir(current_dir().unwrap());
+    let mut package = cargo::Package::from_current_dir(current_dir()?)?;
     package.resolve();
 
     let package: nix::Package = package.into();
-    package.into_file();
+    package.into_file()?;
 
     let mut cmd = Command::new("nix");
     cmd.args([
@@ -35,7 +35,7 @@ async fn main() {
     ])
     .stdout(Stdio::piped());
 
-    let mut child = cmd.spawn().expect("to spawn build command");
+    let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().expect("to get handle on stdout");
 
     let mut reader = BufReader::new(stdout).lines();
@@ -54,4 +54,6 @@ async fn main() {
     while let Some(line) = reader.next_line().await.expect("to get line") {
         println!("{line}");
     }
+
+    Ok(())
 }

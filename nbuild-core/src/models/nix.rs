@@ -33,10 +33,10 @@ pub struct Dependency {
 
 impl Package {
     /// Write the package to a derivation file at `.nbuild.nix`
-    pub fn into_file(self) {
+    pub fn into_file(self) -> Result<(), std::io::Error> {
         let expr = self.into_derivative();
 
-        fs::write(".nbuild.nix", expr).unwrap();
+        fs::write(".nbuild.nix", expr)
     }
 
     /// Turn the package into a derivation string.
