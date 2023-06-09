@@ -306,6 +306,7 @@ impl Dependency {
 
         // Handle renames
         let name = package.borrow().name.clone();
+        let version = package.borrow().version.clone();
 
         // A dependency may appear more than once because of targets. So only get those that match the current target.
         //
@@ -313,6 +314,7 @@ impl Dependency {
         let dependencies: Vec<_> = parent_dependencies
             .iter()
             .filter(|d| d.name == name)
+            .filter(|d| d.req.matches(&version))
             .filter(|d| match &d.target {
                 Some(target_spec) => {
                     // Safe to unwrap since cargo would have failed if the target spec was not valid
