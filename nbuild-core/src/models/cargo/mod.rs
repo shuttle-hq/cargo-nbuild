@@ -249,7 +249,6 @@ impl Package {
     /// needed on the top level package.
     pub fn resolve(&mut self) {
         self.visit(&mut visitor::ResolveVisitor);
-        self.visit(&mut visitor::CleanDefaults);
     }
 
     /// Helper to call visitor easier.

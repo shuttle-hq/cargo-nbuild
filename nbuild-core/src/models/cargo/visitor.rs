@@ -182,15 +182,6 @@ fn unpack_optionals_features(package: &mut Package) {
     }
 }
 
-/// Visitor to remove "default" from enabled features
-pub struct CleanDefaults;
-
-impl Visitor for CleanDefaults {
-    fn visit_package(&mut self, package: &mut Package) {
-        package.enabled_features.remove("default");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -301,9 +292,11 @@ mod tests {
 
         input.resolve();
 
-        child
-            .enabled_features
-            .extend(["one".to_string(), "two".to_string()]);
+        child.enabled_features.extend([
+            "one".to_string(),
+            "two".to_string(),
+            "default".to_string(),
+        ]);
         let expected = make_package_node(
             "parent",
             vec![],
@@ -346,9 +339,11 @@ mod tests {
 
         input.resolve();
 
-        child
-            .enabled_features
-            .extend(["one".to_string(), "two".to_string()]);
+        child.enabled_features.extend([
+            "one".to_string(),
+            "two".to_string(),
+            "default".to_string(),
+        ]);
         let expected = make_package_node(
             "parent",
             vec![],
@@ -834,14 +829,14 @@ mod tests {
             .package
             .borrow_mut()
             .enabled_features
-            .extend(["std".to_string()]);
+            .extend(["std".to_string(), "default".to_string()]);
         child.build_dependencies[0].optional = false;
         child.build_dependencies[0].package = RefCell::new(build_optional).into();
         child.build_dependencies[0]
             .package
             .borrow_mut()
             .enabled_features
-            .extend(["build".to_string()]);
+            .extend(["build".to_string(), "default".to_string()]);
         child.enabled_features.extend([
             "one".to_string(),
             "optional".to_string(),
@@ -1106,9 +1101,12 @@ mod tests {
 
         input.resolve();
 
-        child
-            .enabled_features
-            .extend(["std".to_string(), "other".to_string(), "who".to_string()]);
+        child.enabled_features.extend([
+            "std".to_string(),
+            "default".to_string(),
+            "other".to_string(),
+            "who".to_string(),
+        ]);
 
         let child_rc = RefCell::new(child).into();
 
