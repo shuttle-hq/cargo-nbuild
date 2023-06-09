@@ -1,0 +1,16 @@
+[package]
+name = "child"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["one", "two"]
+one = ["new_name"]
+two = []
+
+[dependencies]
+fnv = "1.0" # This dependency uses a custom lib path
+itoa = "1.0"
+libc = "0.2"
+rustversion = "1.0" # This dependency uses a custom build path is a proc_macro
+new_name = { path = "../rename", package = "rename", optional = true }

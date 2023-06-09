@@ -1,0 +1,8 @@
+[workspace]
+
+members = [
+    "child",
+    "parent",
+    "rename",
+    "targets",
+]
