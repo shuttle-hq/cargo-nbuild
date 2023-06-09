@@ -303,7 +303,7 @@ in
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, str::FromStr};
+    use std::{path::PathBuf, str::FromStr};
 
     use super::*;
 
@@ -332,15 +332,12 @@ mod tests {
 
     #[test]
     fn simple_package() {
-        let path = PathBuf::from_str(env!("CARGO_MANIFEST_DIR"))
-            .unwrap()
-            .join("tests")
-            .join("simple");
-
         let package = Package {
             name: "simple".to_string(),
             version: "0.1.0".parse().unwrap(),
-            source: path.clone().into(),
+            source: PathBuf::from_str("/cargo-nbuild/nbuild-core/tests/simple")
+                .unwrap()
+                .into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -379,18 +376,98 @@ mod tests {
 
         let actual = package.into_derivative();
 
-        let expected = fs::read_to_string(path.join("expected.nix")).unwrap();
+        assert_eq!(
+            actual,
+            r#"{ pkgs ? import <nixpkgs> {
+  overlays = [ (import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz")) ];
+} }:
 
-        assert_eq!(actual, expected);
+let
+  sourceFilter = name: type:
+    let
+      baseName = builtins.baseNameOf (builtins.toString name);
+    in
+      ! (
+        # Filter out git
+        baseName == ".gitignore"
+        || (type == "directory" && baseName == ".git")
+
+        # Filter out build results
+        || (
+          type == "directory" && baseName == "target"
+        )
+
+        # Filter out nix-build result symlinks
+        || (
+          type == "symlink" && pkgs.lib.hasPrefix "result" baseName
+        )
+      );
+  rustVersion = pkgs.rust-bin.stable."1.68.0".default;
+  defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+    opentelemetry-proto = attrs: { buildInputs = [ pkgs.protobuf ]; };
+  };
+  fetchCrate = { crateName, version, sha256 }: pkgs.fetchurl {
+    # https://www.pietroalbini.org/blog/downloading-crates-io/
+    # Not rate-limited, CDN URL.
+    name = "${crateName}-${version}.tar.gz";
+    url = "https://static.crates.io/crates/${crateName}/${crateName}-${version}.crate";
+    inherit sha256;
+  };
+  buildRustCrate = pkgs.buildRustCrate.override {
+    rustc = rustVersion;
+    inherit defaultCrateOverrides fetchCrate;
+  };
+  preBuild = "rustc -vV";
+
+  # Core
+  simple = buildRustCrate rec {
+    crateName = "simple";
+    version = "0.1.0";
+
+    src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /cargo-nbuild/nbuild-core/tests/simple; };
+
+    dependencies = [
+      itoa_1_0_6
+    ];
+    buildDependencies = [arbitrary_1_3_0];
+    edition = "2021";
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+
+  # Dependencies
+  itoa_1_0_6 = buildRustCrate rec {
+    crateName = "itoa";
+    version = "1.0.6";
+
+    sha256 = "itoa_sha";
+    edition = "2018";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  arbitrary_1_3_0 = buildRustCrate rec {
+    crateName = "arbitrary";
+    version = "1.3.0";
+
+    sha256 = "arbitrary_sha";
+    edition = "2018";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+in
+simple
+"#
+        );
     }
 
     #[test]
     fn workspace() {
-        let workspace = PathBuf::from_str(env!("CARGO_MANIFEST_DIR"))
-            .unwrap()
-            .join("tests")
-            .join("workspace");
-        let path = workspace.join("parent");
+        let base = PathBuf::from_str("/cargo-nbuild/nbuild-core/tests/workspace").unwrap();
 
         let libc = RefCell::new(Package {
             name: "libc".to_string(),
@@ -410,7 +487,7 @@ mod tests {
         let package = Package {
             name: "parent".to_string(),
             version: "0.1.0".parse().unwrap(),
-            source: path.clone().into(),
+            source: base.join("parent").into(),
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -418,7 +495,7 @@ mod tests {
                 Package {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
-                    source: workspace.join("child").into(),
+                    source: base.join("child").into(),
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -459,7 +536,7 @@ mod tests {
                             package: RefCell::new(Package {
                                 name: "rename".to_string(),
                                 version: "0.1.0".parse().unwrap(),
-                                source: workspace.join("rename").into(),
+                                source: base.join("rename").into(),
                                 lib_path: None,
                                 build_path: None,
                                 proc_macro: false,
@@ -527,7 +604,7 @@ mod tests {
                 Package {
                     name: "targets".to_string(),
                     version: "0.1.0".parse().unwrap(),
-                    source: workspace.join("targets").into(),
+                    source: base.join("targets").into(),
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -547,8 +624,179 @@ mod tests {
 
         let actual = package.into_derivative();
 
-        let expected = fs::read_to_string(path.join("expected.nix")).unwrap();
+        assert_eq!(
+            actual,
+            r#"{ pkgs ? import <nixpkgs> {
+  overlays = [ (import (builtins.fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz")) ];
+} }:
 
-        assert_eq!(actual, expected);
+let
+  sourceFilter = name: type:
+    let
+      baseName = builtins.baseNameOf (builtins.toString name);
+    in
+      ! (
+        # Filter out git
+        baseName == ".gitignore"
+        || (type == "directory" && baseName == ".git")
+
+        # Filter out build results
+        || (
+          type == "directory" && baseName == "target"
+        )
+
+        # Filter out nix-build result symlinks
+        || (
+          type == "symlink" && pkgs.lib.hasPrefix "result" baseName
+        )
+      );
+  rustVersion = pkgs.rust-bin.stable."1.68.0".default;
+  defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+    opentelemetry-proto = attrs: { buildInputs = [ pkgs.protobuf ]; };
+  };
+  fetchCrate = { crateName, version, sha256 }: pkgs.fetchurl {
+    # https://www.pietroalbini.org/blog/downloading-crates-io/
+    # Not rate-limited, CDN URL.
+    name = "${crateName}-${version}.tar.gz";
+    url = "https://static.crates.io/crates/${crateName}/${crateName}-${version}.crate";
+    inherit sha256;
+  };
+  buildRustCrate = pkgs.buildRustCrate.override {
+    rustc = rustVersion;
+    inherit defaultCrateOverrides fetchCrate;
+  };
+  preBuild = "rustc -vV";
+
+  # Core
+  parent = buildRustCrate rec {
+    crateName = "parent";
+    version = "0.1.0";
+
+    src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /cargo-nbuild/nbuild-core/tests/workspace/parent; };
+
+    dependencies = [
+      child_0_1_0
+      itoa_0_4_8
+      libc_0_2_144
+      targets_0_1_0
+    ];
+    edition = "2021";
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+
+  # Dependencies
+  child_0_1_0 = buildRustCrate rec {
+    crateName = "child";
+    version = "0.1.0";
+
+    src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /cargo-nbuild/nbuild-core/tests/workspace/child; };
+    dependencies = [fnv_1_0_7 itoa_1_0_6 libc_0_2_144 rename_0_1_0 rustversion_1_0_12];
+    buildDependencies = [arbitrary_1_3_0];
+    crateRenames = {"rename" = "new_name";};
+    features = ["one"];
+    edition = "2021";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  fnv_1_0_7 = buildRustCrate rec {
+    crateName = "fnv";
+    version = "1.0.7";
+
+    sha256 = "sha";
+    libPath = "lib.rs";
+    edition = "2015";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  itoa_1_0_6 = buildRustCrate rec {
+    crateName = "itoa";
+    version = "1.0.6";
+
+    sha256 = "sha";
+    edition = "2018";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  libc_0_2_144 = buildRustCrate rec {
+    crateName = "libc";
+    version = "0.2.144";
+
+    sha256 = "sha";
+    edition = "2015";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  rename_0_1_0 = buildRustCrate rec {
+    crateName = "rename";
+    version = "0.1.0";
+
+    src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /cargo-nbuild/nbuild-core/tests/workspace/rename; };
+    edition = "2021";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  rustversion_1_0_12 = buildRustCrate rec {
+    crateName = "rustversion";
+    version = "1.0.12";
+
+    sha256 = "sha";
+    build = "build/build.rs";
+    procMacro = true;
+    edition = "2018";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  arbitrary_1_3_0 = buildRustCrate rec {
+    crateName = "arbitrary";
+    version = "1.3.0";
+
+    sha256 = "sha";
+    edition = "2018";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  itoa_0_4_8 = buildRustCrate rec {
+    crateName = "itoa";
+    version = "0.4.8";
+
+    sha256 = "sha";
+    edition = "2018";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+  targets_0_1_0 = buildRustCrate rec {
+    crateName = "targets";
+    version = "0.1.0";
+
+    src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /cargo-nbuild/nbuild-core/tests/workspace/targets; };
+    features = ["unix"];
+    edition = "2021";
+    crateBin = [];
+    codegenUnits = 16;
+    extraRustcOpts = [ "-C embed-bitcode=no" ];
+    inherit preBuild;
+  };
+in
+parent
+"#
+        );
     }
 }
