@@ -14,6 +14,7 @@ pub struct Package {
     pub(super) name: String,
     pub(super) version: Version,
     pub(super) source: Source,
+    pub(super) lib_name: Option<String>,
     pub(super) lib_path: Option<Utf8PathBuf>,
     pub(super) build_path: Option<Utf8PathBuf>,
     pub(super) proc_macro: bool,
@@ -45,6 +46,7 @@ impl Package {
             name,
             version,
             source,
+            lib_name: _,
             lib_path: _,
             build_path: _,
             proc_macro: _,
@@ -178,6 +180,11 @@ in
             )
         };
 
+        let lib_name = if let Some(lib_name) = &this.lib_name {
+            format!("\n    libName = \"{lib_name}\";")
+        } else {
+            Default::default()
+        };
         let lib_path = if let Some(lib_path) = &this.lib_path {
             format!("\n    libPath = \"{lib_path}\";")
         } else {
@@ -243,7 +250,7 @@ in
 
         let details = format!(
             r#"  {} = buildRustCrate rec {{
-    crateName = "{}";
+    crateName = "{}";{}
     version = "{}";
 
     {}{}{}{}{}{}{}{}
@@ -255,6 +262,7 @@ in
   }};"#,
             this.identifier(),
             this.name,
+            lib_name,
             this.version,
             Self::get_source(&this.source),
             lib_path,
@@ -338,6 +346,7 @@ mod tests {
             source: PathBuf::from_str("/cargo-nbuild/nbuild-core/tests/simple")
                 .unwrap()
                 .into(),
+            lib_name: None,
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -345,6 +354,7 @@ mod tests {
                 name: "itoa".to_string(),
                 version: "1.0.6".parse().unwrap(),
                 source: "itoa_sha".into(),
+                lib_name: None,
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
@@ -359,6 +369,7 @@ mod tests {
                 name: "arbitrary".to_string(),
                 version: "1.3.0".parse().unwrap(),
                 source: "arbitrary_sha".into(),
+                lib_name: None,
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
@@ -473,6 +484,7 @@ simple
             name: "libc".to_string(),
             version: "0.2.144".parse().unwrap(),
             source: "sha".into(),
+            lib_name: None,
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -488,6 +500,7 @@ simple
             name: "parent".to_string(),
             version: "0.1.0".parse().unwrap(),
             source: base.join("parent").into(),
+            lib_name: None,
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -496,6 +509,7 @@ simple
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     source: base.join("child").into(),
+                    lib_name: None,
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -504,6 +518,7 @@ simple
                             name: "fnv".to_string(),
                             version: "1.0.7".parse().unwrap(),
                             source: "sha".into(),
+                            lib_name: None,
                             lib_path: Some("lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -518,6 +533,7 @@ simple
                             name: "itoa".to_string(),
                             version: "1.0.6".parse().unwrap(),
                             source: "sha".into(),
+                            lib_name: None,
                             lib_path: None,
                             build_path: None,
                             proc_macro: false,
@@ -537,6 +553,7 @@ simple
                                 name: "rename".to_string(),
                                 version: "0.1.0".parse().unwrap(),
                                 source: base.join("rename").into(),
+                                lib_name: Some("lib_rename".to_string()),
                                 lib_path: None,
                                 build_path: None,
                                 proc_macro: false,
@@ -553,6 +570,7 @@ simple
                             name: "rustversion".to_string(),
                             version: "1.0.12".parse().unwrap(),
                             source: "sha".into(),
+                            lib_name: None,
                             lib_path: None,
                             build_path: Some("build/build.rs".into()),
                             proc_macro: true,
@@ -568,6 +586,7 @@ simple
                         name: "arbitrary".to_string(),
                         version: "1.3.0".parse().unwrap(),
                         source: "sha".into(),
+                        lib_name: None,
                         lib_path: None,
                         build_path: None,
                         proc_macro: false,
@@ -587,6 +606,7 @@ simple
                     name: "itoa".to_string(),
                     version: "0.4.8".parse().unwrap(),
                     source: "sha".into(),
+                    lib_name: None,
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -605,6 +625,7 @@ simple
                     name: "targets".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     source: base.join("targets").into(),
+                    lib_name: None,
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -738,6 +759,7 @@ let
   };
   rename_0_1_0 = buildRustCrate rec {
     crateName = "rename";
+    libName = "lib_rename";
     version = "0.1.0";
 
     src = pkgs.lib.cleanSourceWith { filter = sourceFilter;  src = /cargo-nbuild/nbuild-core/tests/workspace/rename; };

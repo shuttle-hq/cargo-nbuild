@@ -27,6 +27,7 @@ pub struct Package {
     pub(super) name: String,
     pub(super) version: Version,
     pub(super) source: Source,
+    pub(super) lib_name: Option<String>,
     pub(super) lib_path: Option<Utf8PathBuf>,
     pub(super) build_path: Option<Utf8PathBuf>,
     pub(super) proc_macro: bool,
@@ -183,7 +184,7 @@ impl Package {
         // Safe to unwrap since the manifest has to be in some directory
         let package_path: PathBuf = package.manifest_path.parent().unwrap().into();
 
-        let lib_path = package
+        let (lib_path, lib_name) = package
             .targets
             .iter()
             .find(|t| {
@@ -195,11 +196,15 @@ impl Package {
                 })
             })
             .map(|t| {
-                t.src_path
-                    .strip_prefix(&package_path)
-                    .unwrap() // Safe to unwrap since the src has to be in the package path
-                    .to_path_buf()
-            });
+                (
+                    t.src_path
+                        .strip_prefix(&package_path)
+                        .unwrap() // Safe to unwrap since the src has to be in the package path
+                        .to_path_buf(),
+                    t.name.clone(),
+                )
+            })
+            .unzip();
         let build_path = package
             .targets
             .iter()
@@ -228,6 +233,7 @@ impl Package {
             name: package.name.clone(),
             version: package.version.clone(),
             source,
+            lib_name,
             lib_path,
             build_path,
             proc_macro,
@@ -397,6 +403,7 @@ mod tests {
             Package {
                 name: "simple".to_string(),
                 source: path.into(),
+                lib_name: None,
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
@@ -408,6 +415,7 @@ mod tests {
                         version: "1.0.6".parse().unwrap(),
                         source: "453ad9f582a441959e5f0d088b02ce04cfe8d51a8eaf077f12ac6d3e94164ca6"
                             .into(),
+                        lib_name: Some("itoa".to_string()),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -432,6 +440,7 @@ mod tests {
                         version: "1.3.0".parse().unwrap(),
                         source: "e2d098ff73c1ca148721f37baad5ea6a465a13f9573aba8641fbbbae8164a54e"
                             .into(),
+                        lib_name: Some("arbitrary".to_string()),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -475,6 +484,7 @@ mod tests {
                 name: "parent".to_string(),
                 version: "0.1.0".parse().unwrap(),
                 source: path.into(),
+                lib_name: None,
                 lib_path: None,
                 build_path: None,
                 proc_macro: false,
@@ -485,6 +495,7 @@ mod tests {
                             name: "child".to_string(),
                             version: "0.1.0".parse().unwrap(),
                             source: workspace.join("child").into(),
+                            lib_name: Some("child".to_string()),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -495,6 +506,7 @@ mod tests {
                                         name: "fnv".to_string(),
                                         version: "1.0.7".parse().unwrap(),
                                         source: "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1".into(),
+                                        lib_name: Some("fnv".to_string()),
                                         lib_path: Some("lib.rs".into()),
                                         build_path: None,
                                         proc_macro: false,
@@ -518,6 +530,7 @@ mod tests {
                                         name: "itoa".to_string(),
                                         version: "1.0.6".parse().unwrap(),
                                         source: "453ad9f582a441959e5f0d088b02ce04cfe8d51a8eaf077f12ac6d3e94164ca6".into(),
+                                        lib_name: Some("itoa".to_string()),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: None,
                                         proc_macro: false,
@@ -541,6 +554,7 @@ mod tests {
                                         name: "libc".to_string(),
                                         version: "0.2.144".parse().unwrap(),
                                         source: "2b00cc1c228a6782d0f076e7b232802e0c5689d41bb5df366f2a6b6621cfdfe1".into(),
+                                        lib_name: Some("libc".to_string()),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: Some("build.rs".into()),
                                         proc_macro: false,
@@ -579,6 +593,7 @@ mod tests {
                                         name: "rename".to_string(),
                                         version: "0.1.0".parse().unwrap(),
                                         source: workspace.join("rename").into(),
+                                        lib_name: Some("lib_rename".to_string()),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: None,
                                         proc_macro: false,
@@ -599,6 +614,7 @@ mod tests {
                                         name: "rustversion".to_string(),
                                         version: "1.0.12".parse().unwrap(),
                                         source: "4f3208ce4d8448b3f3e7d168a73f5e0c43a61e32930de3bceeccedb388b6bf06".into(),
+                                        lib_name: Some("rustversion".to_string()),
                                         lib_path: Some("src/lib.rs".into()),
                                         build_path: Some("build/build.rs".into()),
                                         proc_macro: true,
@@ -638,6 +654,7 @@ mod tests {
                             name: "itoa".to_string(),
                             version: "0.4.8".parse().unwrap(),
                             source: "b71991ff56294aa922b450139ee08b3bfc70982c6b2c7562771375cf73542dd4".into(),
+                            lib_name: Some("itoa".to_string()),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -662,6 +679,7 @@ mod tests {
                             name: "libc".to_string(),
                             version: "0.2.144".parse().unwrap(),
                             source: "2b00cc1c228a6782d0f076e7b232802e0c5689d41bb5df366f2a6b6621cfdfe1".into(),
+                            lib_name: Some("libc".to_string()),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: Some("build.rs".into()),
                             proc_macro: false,
@@ -700,6 +718,7 @@ mod tests {
                             name: "targets".to_string(),
                             version: "0.1.0".parse().unwrap(),
                             source: workspace.join("targets").into(),
+                            lib_name: Some("targets".to_string()),
                             lib_path: Some("src/lib.rs".into()),
                             build_path: None,
                             proc_macro: false,

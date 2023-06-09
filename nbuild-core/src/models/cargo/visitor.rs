@@ -212,6 +212,7 @@ mod tests {
 
         Package {
             name: name.to_string(),
+            lib_name: None,
             version: "0.1.0".parse().unwrap(),
             source: "sha".into(),
             lib_path: None,

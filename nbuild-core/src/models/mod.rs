@@ -51,6 +51,7 @@ fn cargo_to_nix(
 ) -> Rc<RefCell<nix::Package>> {
     let cargo::Package {
         name,
+        lib_name,
         version,
         source,
         lib_path,
@@ -77,7 +78,13 @@ fn cargo_to_nix(
                 .map(|dependency| convert_dependency(dependency, converted))
                 .collect();
 
+            // Handle libs that rename themselves
+            let lib_name = lib_name.and_then(|n| if n == name { None } else { Some(n) });
+
+            // Handle libs with a custom `lib.rs` paths
             let lib_path = lib_path.and_then(|p| if p == "src/lib.rs" { None } else { Some(p) });
+
+            // Handle custom `build.rs` paths
             let build_path = build_path.and_then(|p| if p == "build.rs" { None } else { Some(p) });
 
             // The features array needs to stay deterministic to prevent unneeded rebuilds, so we sort it
@@ -88,6 +95,7 @@ fn cargo_to_nix(
                 name: name.clone(),
                 version: version.clone(),
                 source,
+                lib_name,
                 lib_path,
                 build_path,
                 proc_macro,
@@ -150,6 +158,7 @@ mod tests {
             name: "libc".to_string(),
             version: "0.2.144".parse().unwrap(),
             source: "libc_sha".into(),
+            lib_name: Some("libc".to_string()),
             lib_path: Some("src/lib.rs".into()),
             build_path: Some("build.rs".into()),
             proc_macro: false,
@@ -179,6 +188,7 @@ mod tests {
             name: "optional".to_string(),
             version: "1.0.0".parse().unwrap(),
             source: "optional_sha".into(),
+            lib_name: Some("optional".to_string()),
             lib_path: Some("src/lib.rs".into()),
             build_path: None,
             proc_macro: false,
@@ -195,6 +205,7 @@ mod tests {
 
         let input = cargo::Package {
             name: "parent".to_string(),
+            lib_name: None,
             version: "0.1.0".parse().unwrap(),
             source: path.clone().into(),
             lib_path: None,
@@ -207,6 +218,7 @@ mod tests {
                         name: "child".to_string(),
                         version: "0.1.0".parse().unwrap(),
                         source: workspace.join("child").into(),
+                        lib_name: Some("child".to_string()),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -217,6 +229,7 @@ mod tests {
                                     name: "fnv".to_string(),
                                     version: "1.0.7".parse().unwrap(),
                                     source: "fnv_sha".into(),
+                                    lib_name: Some("fnv".to_string()),
                                     lib_path: Some("lib.rs".into()),
                                     build_path: None,
                                     proc_macro: false,
@@ -240,6 +253,7 @@ mod tests {
                                     name: "itoa".to_string(),
                                     version: "1.0.6".parse().unwrap(),
                                     source: "itoa_sha".into(),
+                                    lib_name: Some("itoa".to_string()),
                                     lib_path: Some("src/lib.rs".into()),
                                     build_path: None,
                                     proc_macro: false,
@@ -277,6 +291,7 @@ mod tests {
                                     name: "rename".to_string(),
                                     version: "0.1.0".parse().unwrap(),
                                     source: workspace.join("rename").into(),
+                                    lib_name: Some("lib_rename".to_string()),
                                     lib_path: Some("src/lib.rs".into()),
                                     build_path: None,
                                     proc_macro: false,
@@ -297,6 +312,7 @@ mod tests {
                                     name: "rustversion".to_string(),
                                     version: "1.0.12".parse().unwrap(),
                                     source: "rustversion_sha".into(),
+                                    lib_name: Some("rustversion".to_string()),
                                     lib_path: Some("src/lib.rs".into()),
                                     build_path: Some("build/build.rs".into()),
                                     proc_macro: true,
@@ -318,6 +334,7 @@ mod tests {
                                 name: "arbitrary".to_string(),
                                 version: "1.3.0".parse().unwrap(),
                                 source: "arbitrary_sha".into(),
+                                lib_name: Some("arbitrary".to_string()),
                                 lib_path: Some("src/lib.rs".into()),
                                 build_path: None,
                                 proc_macro: false,
@@ -364,6 +381,7 @@ mod tests {
                         name: "itoa".to_string(),
                         version: "0.4.8".parse().unwrap(),
                         source: "itoa_sha".into(),
+                        lib_name: Some("itoa".to_string()),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -403,6 +421,7 @@ mod tests {
                         name: "targets".to_string(),
                         version: "0.1.0".parse().unwrap(),
                         source: workspace.join("targets").into(),
+                        lib_name: Some("targets".to_string()),
                         lib_path: Some("src/lib.rs".into()),
                         build_path: None,
                         proc_macro: false,
@@ -433,6 +452,7 @@ mod tests {
             name: "libc".to_string(),
             version: "0.2.144".parse().unwrap(),
             source: "libc_sha".into(),
+            lib_name: None,
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -447,6 +467,7 @@ mod tests {
             name: "parent".to_string(),
             version: "0.1.0".parse().unwrap(),
             source: path.into(),
+            lib_name: None,
             lib_path: None,
             build_path: None,
             proc_macro: false,
@@ -455,6 +476,7 @@ mod tests {
                     name: "child".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     source: workspace.join("child").into(),
+                    lib_name: None,
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -463,6 +485,7 @@ mod tests {
                             name: "fnv".to_string(),
                             version: "1.0.7".parse().unwrap(),
                             source: "fnv_sha".into(),
+                            lib_name: None,
                             lib_path: Some("lib.rs".into()),
                             build_path: None,
                             proc_macro: false,
@@ -477,6 +500,7 @@ mod tests {
                             name: "itoa".to_string(),
                             version: "1.0.6".parse().unwrap(),
                             source: "itoa_sha".into(),
+                            lib_name: None,
                             lib_path: None,
                             build_path: None,
                             proc_macro: false,
@@ -496,6 +520,7 @@ mod tests {
                                 name: "rename".to_string(),
                                 version: "0.1.0".parse().unwrap(),
                                 source: workspace.join("rename").into(),
+                                lib_name: Some("lib_rename".to_string()),
                                 lib_path: None,
                                 build_path: None,
                                 proc_macro: false,
@@ -512,6 +537,7 @@ mod tests {
                             name: "rustversion".to_string(),
                             version: "1.0.12".parse().unwrap(),
                             source: "rustversion_sha".into(),
+                            lib_name: None,
                             lib_path: None,
                             build_path: Some("build/build.rs".into()),
                             proc_macro: true,
@@ -527,6 +553,7 @@ mod tests {
                         name: "arbitrary".to_string(),
                         version: "1.3.0".parse().unwrap(),
                         source: "arbitrary_sha".into(),
+                        lib_name: None,
                         lib_path: None,
                         build_path: None,
                         proc_macro: false,
@@ -546,6 +573,7 @@ mod tests {
                     name: "itoa".to_string(),
                     version: "0.4.8".parse().unwrap(),
                     source: "itoa_sha".into(),
+                    lib_name: None,
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
@@ -564,6 +592,7 @@ mod tests {
                     name: "targets".to_string(),
                     version: "0.1.0".parse().unwrap(),
                     source: workspace.join("targets").into(),
+                    lib_name: None,
                     lib_path: None,
                     build_path: None,
                     proc_macro: false,
