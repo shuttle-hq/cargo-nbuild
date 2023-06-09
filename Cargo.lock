@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-nbuild"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nbuild-core",
  "tokio",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "nbuild-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cargo-lock",
  "cargo_metadata",
