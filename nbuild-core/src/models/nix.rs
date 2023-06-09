@@ -1,9 +1,14 @@
+//! This model is used to create / print a nix derivation.
+
 use std::{cell::RefCell, fs, rc::Rc};
 
 use cargo_metadata::{camino::Utf8PathBuf, semver::Version};
 
 use super::Source;
 
+/// A package for a nix [buildRustCrate] block.
+///
+/// [buildRustCrate]: https://github.com/NixOS/nixpkgs/blob/master/doc/languages-frameworks/rust.section.md#buildrustcrate-compiling-rust-crates-using-nix-instead-of-cargo-compiling-rust-crates-using-nix-instead-of-cargo
 #[derive(Debug, PartialEq)]
 pub struct Package {
     pub(super) name: String,
@@ -19,6 +24,7 @@ pub struct Package {
     pub(super) printed: bool,
 }
 
+/// Used to keep track of the dependencies of a package and whether they have any renames.
 #[derive(Debug, PartialEq)]
 pub struct Dependency {
     pub(super) package: Rc<RefCell<Package>>,
@@ -26,13 +32,15 @@ pub struct Dependency {
 }
 
 impl Package {
+    /// Write the package to a derivation file at `.nbuild.nix`
     pub fn into_file(self) {
-        let expr = self.to_derivative();
+        let expr = self.into_derivative();
 
         fs::write(".nbuild.nix", expr).unwrap();
     }
 
-    pub fn to_derivative(self) -> String {
+    /// Turn the package into a derivation string.
+    pub fn into_derivative(self) -> String {
         let Self {
             name,
             version,
@@ -47,7 +55,9 @@ impl Package {
             printed: _,
         } = self;
 
+        // Used to append all the dependency details unto
         let mut build_details = Default::default();
+
         let dep_idents: Vec<_> = dependencies
             .into_iter()
             .map(|d| {
@@ -146,6 +156,7 @@ in
         )
     }
 
+    /// Recursively add a dependency unto `details`
     fn to_details(dependency: &Dependency, build_details: &mut Vec<String>) {
         let mut this = dependency.package.borrow_mut();
 
@@ -217,6 +228,7 @@ in
                 .collect();
             format!("\n    buildDependencies = [{}];", dep_idents.join(" "))
         };
+
         let crate_renames = if renames.is_empty() {
             Default::default()
         } else {
@@ -268,6 +280,7 @@ in
         this.printed = true;
     }
 
+    /// Helper to get a deterministic identifier for a package
     fn identifier(&self) -> String {
         format!(
             "{}_{}",
@@ -276,6 +289,7 @@ in
         )
     }
 
+    /// Helper to get the source definition
     fn get_source(source: &Source) -> String {
         match source {
             Source::Local(path) => format!(
@@ -363,7 +377,7 @@ mod tests {
             printed: false,
         };
 
-        let actual = package.to_derivative();
+        let actual = package.into_derivative();
 
         let expected = fs::read_to_string(path.join("expected.nix")).unwrap();
 
@@ -531,7 +545,7 @@ mod tests {
             printed: false,
         };
 
-        let actual = package.to_derivative();
+        let actual = package.into_derivative();
 
         let expected = fs::read_to_string(path.join("expected.nix")).unwrap();
 

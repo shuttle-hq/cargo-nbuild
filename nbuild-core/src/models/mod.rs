@@ -1,3 +1,5 @@
+//! Models to reason about the cargo inputs and the nix outputs
+
 use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
 
 use cargo_lock::Version;
@@ -6,12 +8,27 @@ use tracing::{instrument, trace};
 pub mod cargo;
 pub mod nix;
 
+/// Where does the crate's code come from
 #[derive(Debug, PartialEq, Clone)]
 pub enum Source {
+    /// It is a local path
+    ///
+    /// ```toml
+    /// [dependencies]
+    /// dependency = { path = "/local/path" }
+    /// ```
     Local(PathBuf),
+
+    /// It is from crates.io
+    ///
+    /// ```toml
+    /// [dependencies]
+    /// dependency = "0.2.0"
+    /// ```
     CratesIo(String),
 }
 
+/// Convert the cargo package to a nix package for output
 impl From<cargo::Package> for nix::Package {
     fn from(package: cargo::Package) -> Self {
         let mut converted = Default::default();
@@ -25,6 +42,8 @@ impl From<cargo::Package> for nix::Package {
     }
 }
 
+/// Recursively convert a cargo package to a nix package. Also ensure a crate is only converted once by using the
+/// `converted` cache to lookup crates that have already been converted.
 #[instrument(skip_all, fields(name = %cargo_package.name))]
 fn cargo_to_nix(
     cargo_package: cargo::Package,
@@ -37,7 +56,7 @@ fn cargo_to_nix(
         lib_path,
         build_path,
         proc_macro,
-        features: _,
+        features: _, // We only care about the features that were enabled at the end
         enabled_features,
         dependencies,
         build_dependencies,
@@ -50,44 +69,18 @@ fn cargo_to_nix(
             let dependencies = dependencies
                 .iter()
                 .filter(|d| !d.optional)
-                .map(|d| {
-                    let cargo_package = Rc::clone(&d.package).borrow().clone();
-                    let package = cargo_to_nix(cargo_package, converted);
-
-                    let rename = if d.name == package.borrow().name {
-                        None
-                    } else {
-                        trace!(dependency_name = d.name, "activating rename");
-
-                        Some(d.name.to_string())
-                    };
-
-                    nix::Dependency { package, rename }
-                })
+                .map(|dependency| convert_dependency(dependency, converted))
                 .collect();
             let build_dependencies = build_dependencies
                 .iter()
                 .filter(|d| !d.optional)
-                .map(|d| {
-                    let cargo_package = Rc::clone(&d.package).borrow().clone();
-                    let package = cargo_to_nix(cargo_package, converted);
-
-                    let rename = if d.name == package.borrow().name {
-                        None
-                    } else {
-                        trace!(dependency_name = d.name, "activating rename");
-
-                        Some(d.name.to_string())
-                    };
-
-                    nix::Dependency { package, rename }
-                })
+                .map(|dependency| convert_dependency(dependency, converted))
                 .collect();
 
             let lib_path = lib_path.and_then(|p| if p == "src/lib.rs" { None } else { Some(p) });
             let build_path = build_path.and_then(|p| if p == "build.rs" { None } else { Some(p) });
 
-            // The features array needs to stay deterministic to prevent rebuilds
+            // The features array needs to stay deterministic to prevent unneeded rebuilds, so we sort it
             let mut features = enabled_features.into_iter().collect::<Vec<_>>();
             features.sort();
 
@@ -111,6 +104,24 @@ fn cargo_to_nix(
             package
         }
     }
+}
+
+fn convert_dependency(
+    dependency: &cargo::Dependency,
+    converted: &mut BTreeMap<(String, Version), Rc<RefCell<nix::Package>>>,
+) -> nix::Dependency {
+    let cargo_package = Rc::clone(&dependency.package).borrow().clone();
+    let package = cargo_to_nix(cargo_package, converted);
+
+    let rename = if dependency.name == package.borrow().name {
+        None
+    } else {
+        trace!(dependency_name = dependency.name, "activating rename");
+
+        Some(dependency.name.to_string())
+    };
+
+    nix::Dependency { package, rename }
 }
 
 #[cfg(test)]

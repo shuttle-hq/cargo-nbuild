@@ -1,3 +1,6 @@
+//! Models used to read in cargo metadata. It is also used to determine which optional dependencies to enable, and
+//! which features to enable.
+
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
@@ -14,6 +17,9 @@ use super::Source;
 
 mod visitor;
 
+pub use visitor::Visitor;
+
+/// Details of a package / crate
 #[derive(Debug, PartialEq, Clone)]
 pub struct Package {
     pub(super) name: String,
@@ -22,13 +28,24 @@ pub struct Package {
     pub(super) lib_path: Option<Utf8PathBuf>,
     pub(super) build_path: Option<Utf8PathBuf>,
     pub(super) proc_macro: bool,
+
+    /// List of possible features for a package
     pub(super) features: HashMap<String, Vec<String>>,
+
+    /// List of features that has been enabled
     pub(super) enabled_features: HashSet<String>,
     pub(super) dependencies: Vec<Dependency>,
     pub(super) build_dependencies: Vec<Dependency>,
     pub(super) edition: String,
 }
 
+/// A dependency of a package. This model is used to keep track of [renames][rename], [optional][optional] dependencies,
+/// [enabled features][features], and whether [`default-features`][default] is active or not.
+///
+/// [rename]: https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#renaming-dependencies-in-cargotoml
+/// [optional]: https://doc.rust-lang.org/cargo/reference/features.html#optional-dependencies
+/// [features]: https://doc.rust-lang.org/cargo/reference/features.html#dependency-features
+/// [default]: https://doc.rust-lang.org/cargo/reference/features.html#dependency-features
 #[derive(Debug, PartialEq, Clone)]
 pub struct Dependency {
     pub(super) name: String,
@@ -39,6 +56,7 @@ pub struct Dependency {
 }
 
 impl Package {
+    /// Get a package from a path with a `Cargo.toml` file
     pub fn from_current_dir(path: impl Into<PathBuf>) -> Self {
         let platform = Platform::current().unwrap();
 
@@ -98,6 +116,8 @@ impl Package {
         )
     }
 
+    /// Recursively get a package and its dependencies. Use the `resolved_packages` to make sure we only
+    /// have one reverence to re-occuring packages.
     fn get_package(
         id: PackageId,
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
@@ -219,21 +239,26 @@ impl Package {
         }
     }
 
+    /// Resolve all the optional dependencies and enabled features of a package. This is done recursively and only
+    /// needed on the top level package.
     pub fn resolve(&mut self) {
         self.visit(&mut visitor::ResolveVisitor);
         self.visit(&mut visitor::CleanDefaults);
     }
 
+    /// Helper to call visitor easier.
     fn visit(&mut self, visitor: &mut impl visitor::Visitor) {
         visitor.visit(self);
     }
 
+    /// Get an iter for all the dependencies of a package. This is both normal dependencies and build dependencies.
     pub fn dependencies_iter(&self) -> impl Iterator<Item = &Dependency> {
         self.dependencies
             .iter()
             .chain(self.build_dependencies.iter())
     }
 
+    /// Get a mutable iter for all the dependencies of a package. This is both normal dependencies and build dependencies.
     pub fn dependencies_iter_mut(&mut self) -> impl Iterator<Item = &mut Dependency> {
         self.dependencies
             .iter_mut()
@@ -242,6 +267,8 @@ impl Package {
 }
 
 impl Dependency {
+    /// Recursively get a dependency and its package. Use the `resolved_packages` to make sure we only
+    /// have one reverence to re-occuring packages - this is needed during feature resolution
     #[instrument(skip_all, fields(%id))]
     fn get_dependency(
         id: &PackageId,
@@ -252,7 +279,6 @@ impl Dependency {
         resolved_packages: &mut BTreeMap<PackageId, Rc<RefCell<Package>>>,
         platform: &Platform,
     ) -> Option<Self> {
-        // We eventually want only one representation of a package when we do feature resolution
         let package = match resolved_packages.get(id) {
             Some(package) => Rc::clone(package),
             None => {
@@ -272,8 +298,12 @@ impl Dependency {
             }
         };
 
+        // Handle renames
         let name = package.borrow().name.clone();
 
+        // A dependency may appear more than once because of targets. So only get those that match the current target.
+        //
+        // https://doc.rust-lang.org/cargo/reference/config.html#target
         let dependencies: Vec<_> = parent_dependencies
             .iter()
             .filter(|d| d.name == name)
@@ -293,6 +323,7 @@ impl Dependency {
             return None;
         }
 
+        // Start with sane default assumptions
         let mut optional = true;
         let mut uses_default_features = false;
         let mut features: Vec<String> = Default::default();
@@ -308,6 +339,7 @@ impl Dependency {
                 uses_default_features = true;
             }
 
+            // Features should be additive
             features.extend(dependency.features.iter().cloned());
 
             if dependency_rename.is_none() && dependency.rename.is_some() {
