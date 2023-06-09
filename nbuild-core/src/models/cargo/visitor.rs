@@ -126,7 +126,7 @@ fn unpack_features(package: &mut Package) -> Vec<String> {
             } else {
                 // Activate a dependency's features
                 // https://doc.rust-lang.org/cargo/reference/features.html#dependency-features
-                if let Some((dependency_name, feature)) = f.split_once("/") {
+                if let Some((dependency_name, feature)) = f.split_once('/') {
                     if let Some(dependency) = package
                         .dependencies
                         .iter_mut()
@@ -136,7 +136,7 @@ fn unpack_features(package: &mut Package) -> Vec<String> {
                         let feature = feature.to_string();
 
                         if !dependency.features.contains(&feature) {
-                            dependency.features.push(feature.clone());
+                            dependency.features.push(feature);
                         }
 
                         return Some(dependency_name.to_string());
@@ -411,7 +411,7 @@ mod tests {
         );
         expected.build_dependencies.push(Dependency {
             name: "build".to_string(),
-            package: RefCell::new(build.clone()).into(),
+            package: RefCell::new(build).into(),
             optional: true,
             uses_default_features: true,
             features: vec![],
@@ -452,7 +452,7 @@ mod tests {
             vec![],
             Some(Dependency {
                 name: "child".to_string(),
-                package: RefCell::new(child.clone()).into(),
+                package: RefCell::new(child).into(),
                 optional: true,
                 uses_default_features: true,
                 features: vec!["one".to_string()],
@@ -460,7 +460,7 @@ mod tests {
         );
         expected.build_dependencies.push(Dependency {
             name: "build".to_string(),
-            package: RefCell::new(build.clone()).into(),
+            package: RefCell::new(build).into(),
             optional: true,
             uses_default_features: true,
             features: vec!["hi".to_string()],
@@ -1089,7 +1089,7 @@ mod tests {
             vec![],
             Some(Dependency {
                 name: "layer1_1".to_string(),
-                package: RefCell::new(layer1_1.clone()).into(),
+                package: RefCell::new(layer1_1).into(),
                 optional: false,
                 uses_default_features: true,
                 features: vec![],
@@ -1140,7 +1140,7 @@ mod tests {
             vec![],
             Some(Dependency {
                 name: "layer1_1".to_string(),
-                package: RefCell::new(layer1_1.clone()).into(),
+                package: RefCell::new(layer1_1).into(),
                 optional: false,
                 uses_default_features: true,
                 features: vec![],

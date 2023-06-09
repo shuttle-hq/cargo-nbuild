@@ -86,14 +86,12 @@ impl Package {
                 .map(|n| (n.id.clone(), n.clone())),
         );
         let checksums = BTreeMap::from_iter(lock_file.packages.iter().filter_map(|p| {
-            if let Some(checksum) = &p.checksum {
-                Some((
+            p.checksum.as_ref().map(|checksum| {
+                (
                     (p.name.to_string(), p.version.to_string()),
                     checksum.to_string(),
-                ))
-            } else {
-                None
-            }
+                )
+            })
         }));
 
         let root_id = metadata
@@ -138,13 +136,13 @@ impl Package {
         );
 
         let features = package.features.clone();
-        let package_dependencies = package
+        let package_dependencies: Vec<_> = package
             .dependencies
             .iter()
             .filter(|d| d.kind == DependencyKind::Normal)
             .cloned()
             .collect();
-        let package_build_dependencies = package
+        let package_build_dependencies: Vec<_> = package
             .dependencies
             .iter()
             .filter(|d| d.kind == DependencyKind::Build)
@@ -274,7 +272,7 @@ impl Dependency {
     #[instrument(skip_all, fields(%id))]
     fn get_dependency(
         id: &PackageId,
-        parent_dependencies: &Vec<cargo_metadata::Dependency>,
+        parent_dependencies: &[cargo_metadata::Dependency],
         packages: &BTreeMap<PackageId, cargo_metadata::Package>,
         nodes: &BTreeMap<PackageId, cargo_metadata::Node>,
         checksums: &BTreeMap<(String, String), String>,

@@ -285,7 +285,7 @@ in
         format!(
             "{}_{}",
             self.name,
-            self.version.to_string().replace('.', "_").replace('+', "_")
+            self.version.to_string().replace(['.', '+'], "_")
         )
     }
 
