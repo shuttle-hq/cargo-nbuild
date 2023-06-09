@@ -1,6 +1,13 @@
 [workspace]
-
 members = [
   "nbuild",
   "nbuild-core",
 ]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/shuttle-hq/cargo-nbuild"
+
+[workspace.dependencies]
+tracing = "0.1.37"

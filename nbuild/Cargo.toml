@@ -1,13 +1,16 @@
 [package]
 name = "cargo-nbuild"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A Rust builder that uses the nix package manager"
 readme = "../README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nbuild-core = { path = "../nbuild-core" }
+nbuild-core = { path = "../nbuild-core", version = "0.1.0" }
 tokio = { version = "1.28.1", features = ["io-util", "macros", "process", "rt-multi-thread"] }
-tracing = "0.1.37"
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
