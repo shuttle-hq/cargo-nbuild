@@ -299,7 +299,7 @@ in
     }
 
     /// Helper to get a deterministic identifier for a package
-    fn identifier(&self) -> String {
+    pub fn identifier(&self) -> String {
         format!(
             "{}_{}",
             self.name,
