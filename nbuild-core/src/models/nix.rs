@@ -40,6 +40,11 @@ impl Package {
         fs::write(".nbuild.nix", expr)
     }
 
+    /// The name of the package
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Turn the package into a derivation string.
     pub fn into_derivative(self) -> String {
         let Self {
