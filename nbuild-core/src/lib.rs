@@ -15,4 +15,7 @@ pub enum Error {
 
     #[error("failed to read cargo lock file: {0}")]
     LockFile(#[from] cargo_lock::Error),
+
+    #[error("in a workspace root, need to select a package from: {}", .0.join(", "))]
+    NeedToSelectPackage(Vec<String>),
 }

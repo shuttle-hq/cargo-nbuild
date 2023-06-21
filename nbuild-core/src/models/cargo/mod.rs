@@ -95,25 +95,37 @@ impl Package {
             })
         }));
 
-        let root_id = metadata
+        let resolved = metadata
             .resolve
             .as_ref()
-            .expect("metadata to have a resolve section")
-            .root
-            .as_ref()
-            .expect("a root from metadata")
-            .clone();
+            .expect("metadata to have a resolve section");
 
-        let mut resolved_packages = Default::default();
+        match resolved.root {
+            None => {
+                let available_packages = metadata
+                    .workspace_packages()
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect();
+                Err(Error::NeedToSelectPackage(available_packages))
+            }
+            Some(ref root_id) => {
+                let mut resolved_packages = Default::default();
 
-        Ok(Self::get_package(
-            root_id,
-            &packages,
-            &nodes,
-            &checksums,
-            &mut resolved_packages,
-            &platform,
-        ))
+                Ok(Self::get_package(
+                    root_id.clone(),
+                    &packages,
+                    &nodes,
+                    &checksums,
+                    &mut resolved_packages,
+                    &platform,
+                ))
+            }
+        }
+        // let root_id =             .root
+        //     .as_ref()
+        //     .expect("a root from metadata")
+        //     .clone();
     }
 
     /// Recursively get a package and its dependencies. Use the `resolved_packages` to make sure we only
