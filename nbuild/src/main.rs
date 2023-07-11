@@ -1,11 +1,28 @@
 use std::{env::current_dir, error::Error, process::Stdio};
 
+use clap::builder::PossibleValue;
+use clap::*;
 use nbuild_core::models::{cargo, nix};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
 };
 use tracing_subscriber::prelude::*;
+
+#[derive(Parser, Debug)]
+#[command(
+    author,
+    version,
+    about,
+    arg(clap::Arg::new("dummy")
+        .value_parser([PossibleValue::new("nbuild")])
+        .required(false)
+        .hide(true))
+)]
+struct Args {
+    #[arg(long, default_value = None)]
+    package: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -17,7 +34,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with(fmt_layer)
         .init();
 
-    let mut package = cargo::Package::from_current_dir(current_dir()?)?;
+    let args = Args::parse();
+    let mut package = cargo::Package::from_current_dir(current_dir()?, args.package)?;
     package.resolve();
 
     let package: nix::Package = package.into();
