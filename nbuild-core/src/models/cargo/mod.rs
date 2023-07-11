@@ -60,7 +60,10 @@ pub struct Dependency {
 
 impl Package {
     /// Get a package from a path with a `Cargo.toml` file
-    pub fn from_current_dir(path: impl Into<PathBuf>) -> Result<Self, Error> {
+    pub fn from_current_dir(
+        path: impl Into<PathBuf>,
+        package: Option<String>,
+    ) -> Result<Self, Error> {
         let platform = Platform::current()?;
 
         let metadata = MetadataCommand::new()
@@ -95,25 +98,49 @@ impl Package {
             })
         }));
 
-        let root_id = metadata
+        let resolved = metadata
             .resolve
             .as_ref()
-            .expect("metadata to have a resolve section")
-            .root
-            .as_ref()
-            .expect("a root from metadata")
-            .clone();
+            .expect("metadata to have a resolve section");
 
-        let mut resolved_packages = Default::default();
+        match package {
+            Some(package_name) => {
+                let package = metadata
+                    .workspace_packages()
+                    .into_iter()
+                    .find(|p| p.name == package_name)
+                    .expect("package passed as argument should exist");
+                Package::from_current_dir(
+                    &package
+                        .manifest_path
+                        .parent()
+                        .expect("manifest_path should have a final component"),
+                    None,
+                )
+            }
+            None => match resolved.root {
+                None => {
+                    let available_packages = metadata
+                        .workspace_packages()
+                        .iter()
+                        .map(|p| p.name.clone())
+                        .collect();
+                    Err(Error::NeedToSelectPackage(available_packages))
+                }
+                Some(ref root_id) => {
+                    let mut resolved_packages = Default::default();
 
-        Ok(Self::get_package(
-            root_id,
-            &packages,
-            &nodes,
-            &checksums,
-            &mut resolved_packages,
-            &platform,
-        ))
+                    Ok(Self::get_package(
+                        root_id.clone(),
+                        &packages,
+                        &nodes,
+                        &checksums,
+                        &mut resolved_packages,
+                        &platform,
+                    ))
+                }
+            },
+        }
     }
 
     /// Recursively get a package and its dependencies. Use the `resolved_packages` to make sure we only
@@ -387,6 +414,7 @@ mod tests {
     use std::{cell::RefCell, collections::HashMap, path::PathBuf, str::FromStr};
 
     use crate::models::cargo::{Dependency, Package};
+    use crate::Error;
 
     use pretty_assertions::assert_eq;
 
@@ -397,7 +425,7 @@ mod tests {
             .join("tests")
             .join("simple");
 
-        let package = Package::from_current_dir(path.clone()).unwrap();
+        let package = Package::from_current_dir(path.clone(), None).unwrap();
 
         assert_eq!(
             package,
@@ -475,16 +503,12 @@ mod tests {
             .unwrap()
             .join("tests")
             .join("workspace");
-        let path = workspace.join("parent");
 
-        let package = Package::from_current_dir(path.clone()).unwrap();
-
-        assert_eq!(
-            package,
+        let package_expected =
             Package {
                 name: "parent".to_string(),
                 version: "0.1.0".parse().unwrap(),
-                source: path.into(),
+                source: workspace.join("parent").into(),
                 lib_name: None,
                 lib_path: None,
                 build_path: None,
@@ -742,7 +766,16 @@ mod tests {
                 features: Default::default(),
                 enabled_features: Default::default(),
                 edition: "2021".to_string(),
-            }
+            };
+
+        assert!(matches!(
+            Package::from_current_dir(workspace.clone(), None).unwrap_err(),
+            Error::NeedToSelectPackage(_)
+        ));
+
+        assert_eq!(
+            Package::from_current_dir(workspace.clone(), Some("parent".to_string())).unwrap(),
+            package_expected
         );
     }
 }
