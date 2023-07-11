@@ -414,6 +414,7 @@ mod tests {
     use std::{cell::RefCell, collections::HashMap, path::PathBuf, str::FromStr};
 
     use crate::models::cargo::{Dependency, Package};
+    use crate::Error;
 
     use pretty_assertions::assert_eq;
 
@@ -424,7 +425,7 @@ mod tests {
             .join("tests")
             .join("simple");
 
-        let package = Package::from_current_dir(path.clone()).unwrap();
+        let package = Package::from_current_dir(path.clone(), None).unwrap();
 
         assert_eq!(
             package,
@@ -502,16 +503,12 @@ mod tests {
             .unwrap()
             .join("tests")
             .join("workspace");
-        let path = workspace.join("parent");
 
-        let package = Package::from_current_dir(path.clone()).unwrap();
-
-        assert_eq!(
-            package,
+        let package_expected =
             Package {
                 name: "parent".to_string(),
                 version: "0.1.0".parse().unwrap(),
-                source: path.into(),
+                source: workspace.join("parent").into(),
                 lib_name: None,
                 lib_path: None,
                 build_path: None,
@@ -769,7 +766,16 @@ mod tests {
                 features: Default::default(),
                 enabled_features: Default::default(),
                 edition: "2021".to_string(),
-            }
+            };
+
+        assert!(matches!(
+            Package::from_current_dir(workspace.clone(), None).unwrap_err(),
+            Error::NeedToSelectPackage(_)
+        ));
+
+        assert_eq!(
+            Package::from_current_dir(workspace.clone(), Some("parent".to_string())).unwrap(),
+            package_expected
         );
     }
 }
